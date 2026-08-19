@@ -18,18 +18,32 @@ Halte dich an folgende absolute Restriktionen:
 
 
 def wash(text: str, model: str = "llama3.2", temperature: float = 0.8) -> str:
-    """Rewrite text via local Ollama model."""
-    cmd = [
-        "ollama", "run", model,
-        "--system", SYSTEM_PROMPT,
-        "--temperature", str(temperature),
-        text,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        print(f"Ollama error: {result.stderr}", file=sys.stderr)
-        sys.exit(1)
-    return result.stdout.strip()
+    """Rewrite text via local Ollama model using HTTP API."""
+    import urllib.request
+    import json
+
+    payload = {
+        "model": model,
+        "system": SYSTEM_PROMPT,
+        "prompt": text,
+        "stream": False,
+        "options": {
+            "temperature": temperature,
+            "num_predict": 1024,
+        },
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "http://127.0.0.1:11434/api/generate",
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result.get("response", "").strip()
+    except Exception as e:
+        raise RuntimeError(f"Ollama error ({model}): {e}")
 
 
 def main():
