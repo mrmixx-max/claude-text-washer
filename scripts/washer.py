@@ -5,6 +5,7 @@ Supports any Ollama model from the pool defined in scripts/models.yaml.
   --model MODEL       Select model (default: llama3.2)
   --list-models       Show all available models and exit
   --temperature N     Sampling temperature
+  --smart-clean       Pre/post clean obvious markers via regex
 """
 from __future__ import annotations
 
@@ -32,6 +33,7 @@ from ollama_utils import (  # noqa: E402
     handle_list_models,
     resolve_model,
 )
+from smart_cleaner import clean_text, get_marker_count  # noqa: E402
 
 # Re-export system prompt for scripts that import it
 SYSTEM_PROMPT = SYSTEM_PROMPT
@@ -58,6 +60,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_io_args(parser)
     add_common_args(parser, include_temperature=True)
+    parser.add_argument(
+        "--smart-clean",
+        action="store_true",
+        help="Pre/post clean obvious markers via regex (cheap, no LLM cost)",
+    )
     # washer.py historically defaults temperature to 0.8 (not None) so that
     # wash() keeps its documented signature; expose it as an explicit default.
     parser.set_defaults(temperature=0.8)
@@ -78,6 +85,13 @@ def main(argv: list[str] | None = None) -> int:
         model = resolve_model(args.model, script_default="llama3.2")
         text = read_input_text(args.input, allow_stdin="-")
 
+        # Smart Clean: pre-clean obvious markers (cheap, no LLM cost)
+        if args.smart_clean:
+            before = get_marker_count(text)
+            text = clean_text(text, aggressive=False)
+            after = get_marker_count(text)
+            print(f"Smart clean: {before} → {after} markers", file=sys.stderr)
+
         with ProgressBar(total=1, label="washing") as bar:
             cleaned = wash(
                 text,
@@ -85,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
                 temperature=args.temperature if args.temperature is not None else 0.8,
             )
             bar.advance()
+
+        # Smart Clean: post-clean (catch what the model missed)
+        if args.smart_clean:
+            cleaned = clean_text(cleaned, aggressive=False)
 
         if args.output:
             write_output_text(args.output, cleaned)

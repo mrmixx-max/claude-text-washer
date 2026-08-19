@@ -38,8 +38,9 @@ from cli_utils import (  # noqa: E402
     read_input_text,
     write_output_text,
 )
-from ollama_utils import SYSTEM_PROMPT, call_ollama, call_ollama_stream  # noqa: E402
-from stat_engine import analyze_text  # noqa: E402
+from ollama_utils import SYSTEM_PROMPT, call_ollama, call_ollama_stream
+from smart_cleaner import clean_text, get_marker_count
+from stat_engine import analyze_text
 
 # The 3-agent model pool.  Each entry is a self-contained config dict so the
 # candidate selection logic is fully testable without touching Ollama.
@@ -204,7 +205,7 @@ def format_results_table(candidates: list[WashCandidate], winner: WashCandidate)
 
 
 def multi_agent_wash(
-    text: str, verbose: bool = False, stream: bool = False, dry_run: bool = False
+    text: str, verbose: bool = False, stream: bool = False, dry_run: bool = False, smart_clean: bool = False
 ) -> WashCandidate:
     """Run 3 models in parallel, return the best candidate.
 
@@ -218,6 +219,8 @@ def multi_agent_wash(
         When True, use streaming output (prints tokens as they arrive).
     dry_run:
         When True, score input without washing.
+    smart_clean:
+        When True, pre/post clean obvious markers via regex.
     """
     if dry_run:
         report = analyze_text(text)
@@ -235,6 +238,14 @@ def multi_agent_wash(
 
     results: list[WashCandidate] = []
     wash_fn = _wash_with_model_stream if stream else _wash_with_model
+
+    # Smart Clean: pre-clean obvious markers (cheap, no LLM cost)
+    if smart_clean:
+        before = get_marker_count(text)
+        text = clean_text(text, aggressive=False)
+        after = get_marker_count(text)
+        print_info(f"Smart clean: {before} → {after} markers", file=sys.stderr)
+
     print_info(f"Launching {len(AGENT_MODELS)} parallel agents...{'(stream)' if stream else ''}", file=sys.stderr)
 
     with ProgressBar(total=len(AGENT_MODELS), label="agents") as bar:
@@ -426,6 +437,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stream output (prints tokens as they arrive, non-streaming scores after)",
     )
     parser.add_argument(
+        "--smart-clean",
+        action="store_true",
+        help="Pre/post clean obvious markers via regex (cheap, no LLM cost)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Only score the input (no wash); prints the pre-wash AI score",
@@ -480,7 +496,17 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print_info("Running 3-agent parallel wash...", file=sys.stderr)
-    best = multi_agent_wash(text, verbose=args.verbose, stream=args.stream, dry_run=args.dry_run)
+    best = multi_agent_wash(text, verbose=args.verbose, stream=args.stream, dry_run=args.dry_run, smart_clean=args.smart_clean)
+
+    # Smart Clean: post-clean (catch what the model missed)
+    if args.smart_clean and best and best.text:
+        best = WashCandidate(
+            text=clean_text(best.text),
+            model=best.model,
+            label=best.label,
+            duration=best.duration,
+            ai_score=best.ai_score,
+        )
 
     if args.output:
         write_output_text(args.output, best.text)

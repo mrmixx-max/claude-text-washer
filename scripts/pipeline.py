@@ -36,6 +36,7 @@ from cli_utils import (  # noqa: E402
     read_input_text,
     write_output_text,
 )
+from smart_cleaner import clean_text, get_marker_count  # noqa: E402
 
 # Model presets — speed vs quality tradeoffs.
 # Each preset can be overridden by an explicit --model flag.
@@ -209,6 +210,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="List all available Ollama models and exit",
     )
+    parser.add_argument(
+        "--smart-clean",
+        action="store_true",
+        help="Pre/post clean obvious markers via regex (cheap, no LLM cost)",
+    )
     return parser
 
 
@@ -229,6 +235,13 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
 
     text = read_input_text(args.input, allow_stdin="-")
+
+    # Smart Clean: pre-clean obvious markers
+    if args.smart_clean:
+        before = get_marker_count(text)
+        text = clean_text(text, aggressive=False)
+        after = get_marker_count(text)
+        print_info(f"Smart clean: {before} → {after} markers")
 
     # If --model was given, inject it into the "standard" preset so it
     # overrides the speed/quality presets while keeping the preset interface
@@ -263,6 +276,10 @@ def main(argv: list[str] | None = None) -> None:
                     max_tokens=cfg["max_tokens"],
                 )
             result = WashResult(current, cfg["model"], time.time() - total_start, passes)
+
+    # Smart Clean: post-clean (catch what the model missed)
+    if args.smart_clean:
+        result.text = clean_text(result.text, aggressive=False)
 
     if args.output:
         write_output_text(args.output, result.text)
