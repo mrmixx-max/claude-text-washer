@@ -39,6 +39,7 @@ from cli_utils import (  # noqa: E402
     write_output_text,
 )
 from ollama_utils import SYSTEM_PROMPT, call_ollama, call_ollama_stream
+from ollama_utils import reset_circuit_breakers, get_circuit_breaker_state, get_circuit_breaker
 from smart_cleaner import clean_text, get_marker_count
 from stat_engine import analyze_text
 
