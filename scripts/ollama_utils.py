@@ -21,8 +21,27 @@ from pathlib import Path
 from typing import Any
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
+OLLAMA_STREAM_URL = "http://127.0.0.1:11434/api/generate"
 DEFAULT_TEMPERATURE = 0.8
 DEFAULT_MAX_TOKENS = 1024
+
+# --- connection pooling ------------------------------------------------------
+# A module-level opener with keep-alive so multi-agent runs reuse HTTP
+# connections instead of opening a new TCP socket per call.
+_opener_lock = threading.Lock()
+_opener: urllib.request.OpenerDirector | None = None
+
+
+def _get_opener() -> urllib.request.OpenerDirector:
+    """Return the shared opener (lazy-initialized, thread-safe)."""
+    global _opener
+    if _opener is not None:
+        return _opener
+    with _opener_lock:
+        if _opener is None:
+            handler = urllib.request.HTTPHandler()
+            _opener = urllib.request.build_opener(handler)
+    return _opener
 
 # --- retry / robustness configuration ---------------------------------------
 DEFAULT_TIMEOUT = 300          # seconds — per HTTP request
@@ -421,7 +440,8 @@ def call_ollama(
             headers={"Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            opener = _get_opener()
+            with opener.open(req, timeout=timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
                 breaker.record_success()
                 return result.get("response", "").strip()
@@ -452,6 +472,56 @@ def call_ollama(
     # Exhausted retries. Should be unreachable, but guard anyway.
     breaker.record_failure()
     raise RuntimeError(f"Ollama error ({model}): {last_exc}") from last_exc
+
+
+def call_ollama_stream(
+    prompt: str,
+    model: str,
+    system_prompt: str = "",
+    temperature: float = DEFAULT_TEMPERATURE,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    timeout: int = DEFAULT_TIMEOUT,
+):
+    """Call Ollama with stream=True, yield text chunks as they arrive.
+
+    Yields stripped text chunks. Raises RuntimeError on failure.
+    No retry/backoff — streaming calls are not retried (would replay
+    the whole stream). Use non-streaming call_ollama for retry logic.
+    """
+    payload: dict[str, Any] = {
+        "model": model,
+        "system": system_prompt,
+        "prompt": prompt,
+        "stream": True,
+        "options": {
+            "temperature": temperature,
+            "num_predict": max_tokens,
+        },
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        OLLAMA_STREAM_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    opener = _get_opener()
+    try:
+        with opener.open(req, timeout=timeout) as resp:
+            for line in resp:
+                line = line.decode("utf-8").strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if chunk.get("error"):
+                    raise RuntimeError(f"Ollama error: {chunk['error']}")
+                yield chunk.get("response", "")
+                if chunk.get("done"):
+                    return
+    except (urllib.error.URLError, OSError) as exc:
+        raise RuntimeError(f"Ollama streaming error ({model}): {exc}") from exc
 
 
 def resolve_model(

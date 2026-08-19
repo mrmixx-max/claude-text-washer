@@ -24,6 +24,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TextIO
 
 # Ensure sibling modules (ollama_utils.py) are importable when run directly
 # or when imported as part of the `scripts` package by pytest.
@@ -37,7 +38,7 @@ from cli_utils import (  # noqa: E402
     read_input_text,
     write_output_text,
 )
-from ollama_utils import SYSTEM_PROMPT, call_ollama  # noqa: E402
+from ollama_utils import SYSTEM_PROMPT, call_ollama, call_ollama_stream  # noqa: E402
 from stat_engine import analyze_text  # noqa: E402
 
 # The 3-agent model pool.  Each entry is a self-contained config dict so the
@@ -104,6 +105,50 @@ def _wash_with_model(text: str, model_cfg: dict) -> WashCandidate:
     )
 
 
+def _wash_with_model_stream(
+    text: str, model_cfg: dict, out: "TextIO" = sys.stdout
+) -> WashCandidate:
+    """Streaming wash — prints tokens as they arrive, scores after.
+
+    Uses the same contract as ``_wash_with_model`` so the multi-agent
+    dispatcher can pick the best candidate by AI score.
+    """
+    start = time.time()
+    parts: list[str] = []
+    try:
+        for chunk in call_ollama_stream(
+            prompt=text,
+            model=model_cfg["name"],
+            system_prompt=SYSTEM_PROMPT,
+            temperature=model_cfg["temperature"],
+            max_tokens=model_cfg["max_tokens"],
+        ):
+            if chunk:
+                print(chunk, end="", flush=True, file=out)
+                parts.append(chunk)
+    except Exception as exc:
+        duration = time.time() - start
+        return WashCandidate(
+            text="".join(parts),
+            model=model_cfg["name"],
+            label=model_cfg["label"],
+            duration=duration,
+            ai_score=999.0,
+            error=str(exc),
+        )
+    print(file=out)
+    duration = time.time() - start
+    full = "".join(parts)
+    report = analyze_text(full)
+    return WashCandidate(
+        text=full,
+        model=model_cfg["name"],
+        label=model_cfg["label"],
+        duration=duration,
+        ai_score=report.ai_score,
+    )
+
+
 def rank_candidates(candidates: list[WashCandidate]) -> WashCandidate:
     """Pick the best candidate — lowest AI score among successful ones.
 
@@ -158,7 +203,9 @@ def format_results_table(candidates: list[WashCandidate], winner: WashCandidate)
     return "\n".join(lines)
 
 
-def multi_agent_wash(text: str, verbose: bool = False) -> WashCandidate:
+def multi_agent_wash(
+    text: str, verbose: bool = False, stream: bool = False, dry_run: bool = False
+) -> WashCandidate:
     """Run 3 models in parallel, return the best candidate.
 
     Parameters
@@ -167,14 +214,33 @@ def multi_agent_wash(text: str, verbose: bool = False) -> WashCandidate:
         The text to rewrite.
     verbose:
         When True, per-model stats are printed to stderr as they complete.
+    stream:
+        When True, use streaming output (prints tokens as they arrive).
+    dry_run:
+        When True, score input without washing.
     """
+    if dry_run:
+        report = analyze_text(text)
+        print_info(
+            f"Dry run — Pre-wash AI Score: {report.ai_score:.1f}/100",
+            file=sys.stderr,
+        )
+        return WashCandidate(
+            text=text,
+            model="dry_run",
+            label="dry_run",
+            duration=0.0,
+            ai_score=report.ai_score,
+        )
+
     results: list[WashCandidate] = []
-    print_info(f"Launching {len(AGENT_MODELS)} parallel agents...", file=sys.stderr)
+    wash_fn = _wash_with_model_stream if stream else _wash_with_model
+    print_info(f"Launching {len(AGENT_MODELS)} parallel agents...{'(stream)' if stream else ''}", file=sys.stderr)
 
     with ProgressBar(total=len(AGENT_MODELS), label="agents") as bar:
         with ThreadPoolExecutor(max_workers=len(AGENT_MODELS)) as executor:
             futures = {
-                executor.submit(_wash_with_model, text, cfg): cfg
+                executor.submit(wash_fn, text, cfg): cfg
                 for cfg in AGENT_MODELS
             }
             for future in as_completed(futures):
@@ -184,7 +250,7 @@ def multi_agent_wash(text: str, verbose: bool = False) -> WashCandidate:
                     bar.advance()
                     if verbose:
                         print(f"  {format_candidate_summary(candidate)}", file=sys.stderr)
-                except Exception as e:  # noqa: BLE001
+                except Exception as e:
                     cfg = futures[future]
                     failed = WashCandidate(
                         text="",
@@ -355,6 +421,11 @@ def build_parser() -> argparse.ArgumentParser:
         "-v", "--verbose", action="store_true", help="Show per-model stats and results table"
     )
     parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Stream output (prints tokens as they arrive, non-streaming scores after)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Only score the input (no wash); prints the pre-wash AI score",
@@ -409,7 +480,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     print_info("Running 3-agent parallel wash...", file=sys.stderr)
-    best = multi_agent_wash(text, verbose=args.verbose)
+    best = multi_agent_wash(text, verbose=args.verbose, stream=args.stream, dry_run=args.dry_run)
 
     if args.output:
         write_output_text(args.output, best.text)
