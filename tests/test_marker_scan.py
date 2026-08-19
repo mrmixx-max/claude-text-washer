@@ -2,13 +2,12 @@
 """Tests for claude-text-washer scripts."""
 from __future__ import annotations
 
-import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from scripts.marker_scan import PATTERNS, scan  # noqa: E402
+from scripts.marker_scan import PATTERNS, scan
 
 
 def test_patterns_non_empty():

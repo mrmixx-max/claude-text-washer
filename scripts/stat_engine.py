@@ -24,6 +24,9 @@ class WatermarkReport:
     green_list_ratio: float
     sentence_entropy: float
     word_entropy: float
+    type_token_ratio: float
+    zipf_coefficient: float
+    hapax_ratio: float
     ai_score: float  # 0-100, higher = more likely AI
     details: dict
 
@@ -50,6 +53,59 @@ def calculate_entropy(tokens: list[str]) -> float:
         if p > 0:
             entropy -= p * math.log2(p)
     return entropy
+
+
+def calculate_type_token_ratio(tokens: list[str]) -> float:
+    """Calculate Type-Token Ratio (TTR) — vocabulary richness.
+    
+    Higher TTR = more diverse vocabulary (more human-like).
+    Lower TTR = repetitive vocabulary (more AI-like).
+    """
+    if not tokens:
+        return 0.0
+    unique = len(set(tokens))
+    return unique / len(tokens)
+
+
+def calculate_zipf_coefficient(tokens: list[str]) -> float:
+    """Calculate Zipf coefficient — deviation from ideal Zipf distribution.
+    
+    Human text follows Zipf's law. AI text often deviates.
+    Returns slope of log(rank) vs log(freq) regression.
+    """
+    if len(tokens) < 10:
+        return 0.0
+    counts = Counter(tokens)
+    sorted_freq = sorted(counts.values(), reverse=True)
+    # Take top 50 tokens to avoid noise from rare words
+    top_freq = sorted_freq[:50]
+    if len(top_freq) < 5:
+        return 0.0
+    log_ranks = [math.log(i + 1) for i in range(len(top_freq))]
+    log_freqs = [math.log(f) for f in top_freq]
+    n = len(log_ranks)
+    sum_x = sum(log_ranks)
+    sum_y = sum(log_freqs)
+    sum_xy = sum(x * y for x, y in zip(log_ranks, log_freqs))
+    sum_x2 = sum(x * x for x in log_ranks)
+    denom = n * sum_x2 - sum_x * sum_x
+    if denom == 0:
+        return 0.0
+    slope = (n * sum_xy - sum_x * sum_y) / denom
+    return -slope  # Return positive value (ideal Zipf ≈ 1.0)
+
+
+def calculate_hapax_ratio(tokens: list[str]) -> float:
+    """Calculate hapax legomena ratio — words appearing only once.
+    
+    Higher ratio = more unique words = more human-like.
+    AI text tends to reuse vocabulary more.
+    """
+    if not tokens:
+        return 0.0
+    counts = Counter(tokens)
+    hapax = sum(1 for c in counts.values() if c == 1)
+    return hapax / len(counts) if counts else 0.0
 
 
 def calculate_perplexity(tokens: list[str]) -> float:
@@ -93,8 +149,7 @@ def detect_green_list_bias(tokens: list[str]) -> float:
         'of', 'with', 'by', 'from', 'as', 'is', 'was', 'are', 'were', 'been',
         'be', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
         'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought',
-        'used', 'der', 'die', 'das', 'ein', 'eine', 'und', 'oder', 'aber', 'in',
-        'auf', 'an', 'zu', 'für', 'von', 'mit', 'bei', 'aus', 'als', 'ist', 'war',
+        'used', 'der', 'die', 'das', 'ein', 'eine', 'und', 'oder', 'aber', 'auf', 'zu', 'für', 'von', 'mit', 'bei', 'aus', 'als', 'ist', 'war',
         'sind', 'waren', 'sein', 'haben', 'hat', 'hatte', 'wird', 'würde', 'kann',
     }
     
@@ -137,6 +192,7 @@ def analyze_text(text: str) -> WatermarkReport:
         return WatermarkReport(
             perplexity=0.0, burstiness=0.0, ngram_bias=0.0,
             green_list_ratio=0.0, sentence_entropy=0.0, word_entropy=0.0,
+            type_token_ratio=0.0, zipf_coefficient=0.0, hapax_ratio=0.0,
             ai_score=0.0, details={"error": "empty text"}
         )
     
@@ -145,6 +201,9 @@ def analyze_text(text: str) -> WatermarkReport:
     word_entropy = calculate_entropy(tokens)
     sentence_entropy = calculate_sentence_entropy(sentences)
     green_list_ratio = detect_green_list_bias(tokens)
+    type_token_ratio = calculate_type_token_ratio(tokens)
+    zipf_coefficient = calculate_zipf_coefficient(tokens)
+    hapax_ratio = calculate_hapax_ratio(tokens)
     
     # N-gram bias (measure of repetitive patterns)
     bigrams = analyze_ngrams(tokens, 2)
@@ -155,15 +214,21 @@ def analyze_text(text: str) -> WatermarkReport:
     # Low burstiness + low entropy + high green-list ratio = likely AI
     ai_score = 0.0
     if burstiness < 0.3:
-        ai_score += 25
-    if word_entropy < 6.0:
-        ai_score += 25
-    if sentence_entropy < 0.8:
         ai_score += 20
+    if word_entropy < 6.0:
+        ai_score += 20
+    if sentence_entropy < 0.8:
+        ai_score += 15
     if green_list_ratio > 0.4:
-        ai_score += 15
+        ai_score += 10
     if ngram_bias > 0.05:
-        ai_score += 15
+        ai_score += 10
+    if type_token_ratio < 0.4:
+        ai_score += 10
+    if hapax_ratio < 0.3:
+        ai_score += 10
+    if zipf_coefficient < 0.5:
+        ai_score += 5
     
     return WatermarkReport(
         perplexity=perplexity,
@@ -172,6 +237,9 @@ def analyze_text(text: str) -> WatermarkReport:
         green_list_ratio=green_list_ratio,
         sentence_entropy=sentence_entropy,
         word_entropy=word_entropy,
+        type_token_ratio=type_token_ratio,
+        zipf_coefficient=zipf_coefficient,
+        hapax_ratio=hapax_ratio,
         ai_score=min(ai_score, 100.0),
         details={
             "token_count": len(tokens),
@@ -253,7 +321,7 @@ def wash_statistical(text: str, model: str = "llama3.2", temperature: float = 0.
             result = json.loads(resp.read().decode("utf-8"))
             cleaned = result.get("response", "").strip()
             return cleaned, report
-    except Exception as e:
+    except (urllib.error.URLError, OSError) as e:
         raise RuntimeError(f"Ollama error ({model}): {e}")
 
 
@@ -285,6 +353,9 @@ def main():
             "green_list_ratio": round(report.green_list_ratio, 3),
             "sentence_entropy": round(report.sentence_entropy, 3),
             "word_entropy": round(report.word_entropy, 3),
+            "type_token_ratio": round(report.type_token_ratio, 3),
+            "zipf_coefficient": round(report.zipf_coefficient, 3),
+            "hapax_ratio": round(report.hapax_ratio, 3),
             "ai_score": round(report.ai_score, 1),
             "details": report.details,
         }
@@ -298,6 +369,9 @@ def main():
             print(f"Sentence Entropy: {output['sentence_entropy']}")
             print(f"Green-list Ratio: {output['green_list_ratio']}")
             print(f"N-gram Bias: {output['ngram_bias']}")
+            print(f"Type-Token Ratio: {output['type_token_ratio']}")
+            print(f"Zipf Coefficient: {output['zipf_coefficient']}")
+            print(f"Hapax Ratio: {output['hapax_ratio']}")
     else:
         cleaned, report = wash_statistical(text, args.model, args.temperature)
         if args.output:

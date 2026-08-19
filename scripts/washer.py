@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 from pathlib import Path
 
@@ -19,8 +18,8 @@ Halte dich an folgende absolute Restriktionen:
 
 def wash(text: str, model: str = "llama3.2", temperature: float = 0.8) -> str:
     """Rewrite text via local Ollama model using HTTP API."""
-    import urllib.request
     import json
+    import urllib.request
 
     payload = {
         "model": model,
@@ -42,7 +41,7 @@ def wash(text: str, model: str = "llama3.2", temperature: float = 0.8) -> str:
         with urllib.request.urlopen(req, timeout=300) as resp:
             result = json.loads(resp.read().decode("utf-8"))
             return result.get("response", "").strip()
-    except Exception as e:
+    except (urllib.error.URLError, OSError) as e:
         raise RuntimeError(f"Ollama error ({model}): {e}")
 
 

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import subprocess
+import json
 import sys
 import time
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,8 +37,6 @@ class WashResult:
 
 def call_ollama(text: str, model: str, temperature: float, max_tokens: int) -> str:
     """Call local Ollama model via HTTP API (compatible with Ollama 0.32+)."""
-    import urllib.request
-    import json
 
     payload = {
         "model": model,
@@ -59,7 +58,7 @@ def call_ollama(text: str, model: str, temperature: float, max_tokens: int) -> s
         with urllib.request.urlopen(req, timeout=300) as resp:
             result = json.loads(resp.read().decode("utf-8"))
             return result.get("response", "").strip()
-    except Exception as e:
+    except (urllib.error.URLError, OSError) as e:
         raise RuntimeError(f"Ollama error ({model}): {e}")
 
 
@@ -105,7 +104,6 @@ def main():
 
     # Override model if specified
     if args.model:
-        preset = "standard"
         MODELS["standard"] = {
             "model": args.model,
             "temperature": args.temperature or 0.8,

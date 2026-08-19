@@ -11,7 +11,10 @@ from scripts.stat_engine import (
     analyze_text,
     calculate_burstiness,
     calculate_entropy,
-    calculate_perplexity,
+    calculate_hapax_ratio,
+    calculate_sentence_entropy,
+    calculate_type_token_ratio,
+    calculate_zipf_coefficient,
     detect_green_list_bias,
     generate_anti_watermark_prompt,
     sentence_split,
@@ -89,6 +92,43 @@ def test_generate_prompt():
     prompt = generate_anti_watermark_prompt(text, report)
     assert "Rewrite" in prompt
     assert text in prompt
+
+
+def test_type_token_ratio():
+    tokens = ["the", "cat", "sat", "on", "the", "mat"]
+    ttr = calculate_type_token_ratio(tokens)
+    assert 0.0 < ttr < 1.0
+
+
+def test_type_token_ratio_repetitive():
+    tokens = ["the", "the", "the", "the"]
+    ttr = calculate_type_token_ratio(tokens)
+    assert ttr == 0.25
+
+
+def test_zipf_coefficient():
+    # Natural-like distribution
+    tokens = ["the"] * 50 + ["cat"] * 25 + ["sat"] * 15 + ["on"] * 10 + ["mat"] * 5
+    zipf = calculate_zipf_coefficient(tokens)
+    assert zipf > 0
+
+
+def test_zipf_coefficient_short():
+    tokens = ["hello", "world"]
+    zipf = calculate_zipf_coefficient(tokens)
+    assert zipf == 0.0
+
+
+def test_hapax_ratio():
+    tokens = ["the", "cat", "sat", "on", "mat"]
+    hapax = calculate_hapax_ratio(tokens)
+    assert hapax == 1.0  # All unique
+
+
+def test_hapax_ratio_repetitive():
+    tokens = ["the", "the", "the", "cat", "cat", "sat"]
+    hapax = calculate_hapax_ratio(tokens)
+    assert 0.0 < hapax < 1.0
 
 
 if __name__ == "__main__":
