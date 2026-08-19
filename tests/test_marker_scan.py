@@ -28,7 +28,7 @@ def test_scan_claude_closer():
 def test_scan_english_opener():
     text = "In today's digital world, AI is transforming everything."
     hits = scan(text)
-    assert any("opener" in h[2].lower() for h in hits)
+    assert any("opener" in h[1].lower() for h in hits)
 
 
 def test_scan_no_false_positives_on_real_text():
