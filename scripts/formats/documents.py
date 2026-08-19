@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 # ---------------------------------------------------------------- data types
-SUPPORTED = ["docx", "xlsx", "pptx", "epub", "odt", "html", "htm", "md", "markdown", "txt"]
+SUPPORTED = ["docx", "pdf", "xlsx", "pptx", "epub", "odt", "html", "htm", "md", "markdown", "txt"]
 
 
 @dataclass
@@ -122,14 +122,28 @@ def _ext(filename: str) -> str:
 
 
 # ---------------------------------------------------------------- text extraction
-def extract_text(data: bytes, filename: str) -> ExtractedDocument:
-    """Extract readable text from a document (any supported format)."""
-    fmt = detect_format(data, filename)
+def extract_text(data: bytes, filename: str, *, force_format: str | None = None) -> ExtractedDocument:
+    """Extract readable text from a document (any supported format).
+
+    Parameters
+    ----------
+    data:
+        Raw file bytes.
+    filename:
+        Filename (used for extension-based fallback detection).
+    force_format:
+        If given, bypass magic-byte detection and extract using this format
+        key (e.g. ``"pdf"`` or ``"docx"``).  Unknown formats fall through to a
+        best-effort UTF-8 decode.
+    """
+    fmt = force_format or detect_format(data, filename)
     metadata = {}
     text = ""
 
     if fmt == "docx":
         text, metadata = _extract_docx(data)
+    elif fmt == "pdf":
+        text, metadata = _extract_pdf(data)
     elif fmt == "xlsx":
         text, metadata = _extract_xlsx(data)
     elif fmt == "pptx":
@@ -150,6 +164,39 @@ def extract_text(data: bytes, filename: str) -> ExtractedDocument:
         metadata = {"chars": len(text)}
 
     return ExtractedDocument(filename=filename, format=fmt, text=text, metadata=metadata)
+
+
+def _extract_pdf(data: bytes) -> tuple[str, dict]:
+    """Extract text from a PDF using PyMuPDF (``pymupdf``), lazily imported.
+
+    Falls back to the deprecated ``fitz`` alias if the new import name is absent.
+    Returns ``(text, metadata)`` where *metadata* holds the PDF's docinfo dict.
+    """
+    meta: dict = {}
+    try:
+        try:
+            import pymupdf as fitz  # current recommended import name
+        except ImportError:  # pragma: no cover - fallback path
+            import fitz  # type: ignore  # legacy alias
+    except ImportError:
+        return data.decode("utf-8", "replace"), {"error": "pymupdf not installed"}
+
+    texts: list[str] = []
+    try:
+        doc = fitz.open(stream=data, filetype="pdf")
+    except Exception as exc:
+        return data.decode("utf-8", "replace"), {"error": f"pymupdf open failed: {exc}"}
+    try:
+        for page in doc:
+            texts.append(page.get_text())
+        try:
+            info = doc.metadata
+            meta = {k: v for k, v in (info or {}).items() if v}
+        except Exception:
+            pass
+    finally:
+        doc.close()
+    return "\n".join(texts).strip(), meta
 
 
 def _extract_docx(data: bytes) -> tuple[str, dict]:

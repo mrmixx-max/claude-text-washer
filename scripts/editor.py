@@ -2,13 +2,14 @@
 """Interactive terminal text editor for claude-text-washer.
 
 Features:
-- Real-time cursor navigation (arrow keys, Home/End, PgUp/PgDn)
-- Text insertion / deletion at cursor position
-- Line wrapping at configurable width
-- Status bar: cursor position, character count, live AI score
-- Ctrl+S save, Ctrl+Q quick-exit (prompts on unsaved changes)
-- Load via ``python scripts/editor.py input.txt``
-- Save via ``python scripts/editor.py input.txt --output clean.txt``
+|- Real-time cursor navigation (arrow keys, Home/End, PgUp/PgDn)
+|- Text insertion / deletion at cursor position
+|- Line wrapping at configurable width
+|- Status bar: cursor position, char/word/line counts, live AI score
+|- Ctrl+P WYSIWYG full-screen preview
+|- Ctrl+S save, Ctrl+Q quick-exit (prompts on unsaved changes)
+|- Load via ``python scripts/editor.py input.txt``
+|- Save via ``python scripts/editor.py input.txt --output clean.txt``
 
 Uses ``msvcrt`` on Windows with a ``tty`` + ``termios`` fallback on Unix.
 The core editing logic lives in :class:`TextBuffer` (fully unit-testable
@@ -315,13 +316,40 @@ class TextBuffer:
         Path(path).write_text(self.to_text(), encoding="utf-8")
         self.dirty = False
 
+    # -- stats ----------------------------------------------------------- #
+
+    @property
+    def word_count(self) -> int:
+        """Count whitespace-separated words across all lines."""
+        return sum(len(line.split()) for line in self.lines)
+
+    def stats(self) -> dict:
+        """Return a dict of editable-buffer statistics (pure, testable).
+
+        Keys: ``chars``, ``words``, ``lines``, ``ai_score`` (0-100), ``dirty``.
+        """
+        text = self.to_text()
+        score = self.ai_score() if text.strip() else 0.0
+        return {
+            "chars": self.char_count,
+            "words": self.word_count,
+            "lines": self.line_count,
+            "ai_score": score,
+            "dirty": self.dirty,
+        }
+
 
 # --------------------------------------------------------------------------- #
 # Text wrapping helper
 # --------------------------------------------------------------------------- #
 
 def _wrap_text(text: str, width: int) -> list[str]:
-    """Greedy word-wrap *text* into lines no longer than *width* chars."""
+    """Greedy word-wrap *text* into lines no longer than *width* chars.
+
+    Words longer than *width* are hard-broken at the wrap boundary so a single
+    over-long token never spills past the column limit (including the very
+    first word, which the original implementation skipped).
+    """
     if width <= 0:
         return [text]
     if len(text) <= width:
@@ -329,23 +357,25 @@ def _wrap_text(text: str, width: int) -> list[str]:
     result: list[str] = []
     line = ""
     for word in text.split(" "):
-        if not line:
+        if len(word) > width:
+            # Flush any pending text, then hard-break the oversized word.
+            if line:
+                result.append(line)
+                line = ""
+            while len(word) > width:
+                result.append(word[:width])
+                word = word[width:]
+            line = word
+        elif not line:
             line = word
         elif len(line) + 1 + len(word) <= width:
             line = line + " " + word
         else:
             result.append(line)
-            if len(word) > width:
-                # Hard-break very long word
-                while len(word) > width:
-                    result.append(word[:width])
-                    word = word[width:]
-                line = word
-            else:
-                line = word
+            line = word
     if line:
         result.append(line)
-    return result
+    return result if result else [""]
 
 
 def wrap_text(text: str, width: int) -> list[str]:
@@ -363,6 +393,7 @@ class StatusInfo:
     row: int
     col: int
     char_count: int
+    word_count: int
     line_count: int
     dirty: bool
     ai_score: float
@@ -370,12 +401,12 @@ class StatusInfo:
 
     def render(self) -> str:
         pos = f" Ln {self.row + 1}, Col {self.col + 1} "
-        counts = f"Chars {self.char_count}  Lines {self.line_count} "
+        counts = f"Chars {self.char_count}  Words {self.word_count}  Lines {self.line_count} "
         flag = "*" if self.dirty else " "
         score = f"AI {self.ai_score:.0f}/100 "
         left = f"{flag} {pos}{counts}{score}"
         # Pad to width so the bar clears leftover characters
-        right = " Ctrl+S Save  Ctrl+Q Quit  Ctrl+F Find/Fmt "
+        right = " Ctrl+P Preview  Ctrl+S Save  Ctrl+Q Quit  Ctrl+F Find/Fmt "
         bar = left + " " * max(1, self.width - len(left) - len(right)) + right
         return bar[: self.width]
 
@@ -385,6 +416,7 @@ def build_status_info(buf: TextBuffer, width: int) -> StatusInfo:
         row=buf.cursor.row,
         col=buf.cursor.col,
         char_count=buf.char_count,
+        word_count=buf.word_count,
         line_count=buf.line_count,
         dirty=buf.dirty,
         ai_score=buf.ai_score(),
@@ -399,11 +431,12 @@ def build_status_info(buf: TextBuffer, width: int) -> StatusInfo:
 # Control-key tokens we map to named actions.
 # Format: (token) -> action_name
 CTRL_KEYS: dict[str, str] = {
-    "\x13": "save",       # Ctrl+S
-    "\x11": "quit",       # Ctrl+Q
-    "\x06": "find",       # Ctrl+F
+    "\x13": "save",        # Ctrl+S
+    "\x11": "quit",        # Ctrl+Q
+    "\x06": "find",        # Ctrl+F
+    "\x10": "preview",     # Ctrl+P — WYSIWYG full-screen preview
     "\x01": "line_start",  # Ctrl+A
-    "\x05": "line_end",   # Ctrl+E
+    "\x05": "line_end",    # Ctrl+E
     "\x09": "tab",
     "\n": "newline",
     "\r": "newline",
@@ -493,6 +526,32 @@ def render_viewport(
 
     screen_cursor = CursorPos(wrapped_cursor.vrow - top_row, wrapped_cursor.col)
     return view, screen_cursor, top_row
+
+
+def render_fullscreen_preview(buf: TextBuffer, width: int, height: int) -> list[str]:
+    """Render the buffer as a WYSIWYG full-screen preview (no cursor glyph).
+
+    The text is hard-wrapped at *width* and padded/truncated to *height*
+    lines so it fills the screen uniformly.  This is a pure function —
+    suitable for unit testing the preview layout independently of the
+    interactive loop.
+    """
+    avail = max(1, height - 2)  # reserve space for header + footer (stats live in the footer)
+    wrapped = buf.visible_lines(width)
+    lines: list[str] = []
+    lines.append(f"{ANSI.BOLD}{ANSI.CYAN}== WYSIWYG Preview (wrapped @ {width} cols) =={ANSI.RESET}")
+    for i in range(avail):
+        if i < len(wrapped):
+            lines.append(wrapped[i])
+        else:
+            lines.append("")
+    stats = buf.stats()
+    lines.append(
+        f"{ANSI.DIM}Chars {stats['chars']}  Words {stats['words']}  "
+        f"Lines {stats['lines']}  AI {stats['ai_score']:.0f}/100"
+        f"  {'DIRTY' if stats['dirty'] else 'clean'}{ANSI.RESET}"
+    )
+    return lines[:height]
 
 
 @dataclass
@@ -646,6 +705,8 @@ def _draw_and_step(
             buf.page_up(avail)
         elif action == "page_down":
             buf.page_down(avail)
+        elif action == "preview":
+            _show_preview(buf, width, height, top_row)
 
     # Recompute scroll so cursor stays visible
     view, screen_cursor, top_row = render_viewport(buf, width, height, top_row)
@@ -665,6 +726,21 @@ def _render_screen(buf: TextBuffer, view: list[str], screen_cursor: CursorPos,
             print(line)
     info = build_status_info(buf, width)
     print(f"{ANSI.BG_GREY}{info.render()}{ANSI.RESET}")
+
+
+def _show_preview(buf: TextBuffer, width: int, height: int, top_row: int) -> None:
+    """Full-screen WYSIWYG preview of the buffer as it will render.
+
+    Presses any key to return to the editor.  Uses the pure
+    :func:`render_fullscreen_preview` helper so the layout is testable.
+    """
+    print("\x1b[2J\x1b[H", end="", flush=True)
+    lines = render_fullscreen_preview(buf, width, height)
+    for line in lines:
+        print(line, flush=True)
+    print(f"\n{ANSI.DIM}Press any key to return to the editor...{ANSI.RESET}",
+          end="", flush=True)
+    getch()
 
 
 def _flash(msg: str, color: str = ANSI.YELLOW, row: int = 0) -> None:
@@ -725,8 +801,8 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     output_path = args.output
     if args.input:
         buf = TextBuffer.from_file(args.input)

@@ -1,0 +1,233 @@
+============================= test session starts =============================
+platform win32 -- Python 3.11.15, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\webma\AppData\Local\hermes\hermes-agent\venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: C:\Users\webma\Downloads\claude-text-washer
+plugins: anyio-4.14.2, cov-7.1.0, timeout-2.4.0
+collecting ... collected 135 items
+
+tests/test_chat.py::test_system_prompt_exists PASSED                     [  0%]
+tests/test_chat.py::test_ai_score_color_low PASSED                       [  1%]
+tests/test_chat.py::test_ai_score_color_medium PASSED                    [  2%]
+tests/test_chat.py::test_ai_score_color_high PASSED                      [  2%]
+tests/test_chat.py::test_ollama_chat_success PASSED                      [  3%]
+tests/test_chat.py::test_ollama_chat_error PASSED                        [  4%]
+tests/test_cli_utils.py::test_format_duration_milliseconds PASSED        [  5%]
+tests/test_cli_utils.py::test_format_duration_seconds PASSED             [  5%]
+tests/test_cli_utils.py::test_format_duration_minutes PASSED             [  6%]
+tests/test_cli_utils.py::test_colorize_disabled PASSED                   [  7%]
+tests/test_cli_utils.py::test_colorize_enabled PASSED                    [  8%]
+tests/test_cli_utils.py::test_colorize_no_color PASSED                   [  8%]
+tests/test_cli_utils.py::test_section_header_non_tty FAILED              [  9%]
+tests/test_cli_utils.py::test_section_header_tty_renders_banner PASSED   [ 10%]
+tests/test_cli_utils.py::test_read_input_text_from_file PASSED           [ 11%]
+tests/test_cli_utils.py::test_read_input_text_missing_raises PASSED      [ 11%]
+tests/test_cli_utils.py::test_read_input_text_directory_raises PASSED    [ 12%]
+tests/test_cli_utils.py::test_read_input_text_stdin FAILED               [ 13%]
+tests/test_cli_utils.py::test_write_output_text_creates_dirs PASSED      [ 14%]
+tests/test_cli_utils.py::test_progress_indicator_no_crash_when_disabled PASSED [ 14%]
+tests/test_cli_utils.py::test_progress_indicator_runs_when_enabled PASSED [ 15%]
+tests/test_cli_utils.py::test_progress_bar_state_advances PASSED         [ 16%]
+tests/test_cli_utils.py::test_progress_bar_context_manager PASSED        [ 17%]
+tests/test_cli_utils.py::test_progress_bar_ascii_render PASSED           [ 17%]
+tests/test_cli_utils.py::test_progress_bar_zero_total_does_not_crash PASSED [ 18%]
+tests/test_cli_utils.py::test_add_common_args_parses PASSED              [ 19%]
+tests/test_cli_utils.py::test_add_common_args_temperature_optional PASSED [ 20%]
+tests/test_cli_utils.py::test_add_io_args_parses PASSED                  [ 20%]
+tests/test_cli_utils.py::test_add_io_args_default_none PASSED            [ 21%]
+tests/test_cli_utils.py::test_cli_entry_passes_through PASSED            [ 22%]
+tests/test_cli_utils.py::test_cli_entry_handles_file_not_found FAILED    [ 22%]
+tests/test_cli_utils.py::test_cli_entry_handles_directory_error FAILED   [ 23%]
+tests/test_cli_utils.py::test_cli_entry_handles_value_error FAILED       [ 24%]
+tests/test_cli_utils.py::test_cli_entry_keyboard_interrupt PASSED        [ 25%]
+tests/test_cli_utils.py::test_init_terminal_returns_bool PASSED          [ 25%]
+tests/test_editor.py::test_cursor_clone_independent PASSED               [ 26%]
+tests/test_editor.py::test_from_text_single_line PASSED                  [ 27%]
+tests/test_editor.py::test_from_text_multi_line PASSED                   [ 28%]
+tests/test_editor.py::test_from_text_trailing_newline PASSED             [ 28%]
+tests/test_editor.py::test_from_text_empty PASSED                        [ 29%]
+tests/test_editor.py::test_word_count PASSED                             [ 30%]
+tests/test_editor.py::test_to_text_roundtrip PASSED                      [ 31%]
+tests/test_editor.py::test_stats_returns_expected_keys PASSED            [ 31%]
+tests/test_editor.py::test_stats_empty_text_zero_score PASSED            [ 32%]
+tests/test_editor.py::test_insert_single_char_at_start PASSED            [ 33%]
+tests/test_editor.py::test_insert_multiline_paste PASSED                 [ 34%]
+tests/test_editor.py::test_insert_at_end_appends PASSED                  [ 34%]
+tests/test_editor.py::test_backspace_deletes_prev_char PASSED            [ 35%]
+tests/test_editor.py::test_backspace_joins_previous_line PASSED          [ 36%]
+tests/test_editor.py::test_delete_char_forward PASSED                    [ 37%]
+tests/test_editor.py::test_delete_char_joins_next_line PASSED            [ 37%]
+tests/test_editor.py::test_cursor_movement_clamped FAILED                [ 38%]
+tests/test_editor.py::test_move_to_top_and_bottom PASSED                 [ 39%]
+tests/test_editor.py::test_page_up_down PASSED                           [ 40%]
+tests/test_editor.py::test_page_up_clamped_to_zero PASSED                [ 40%]
+tests/test_editor.py::test_save_writes_text PASSED                       [ 41%]
+tests/test_editor.py::test_wrap_short_text_unchanged PASSED              [ 42%]
+tests/test_editor.py::test_wrap_text_word_boundary PASSED                [ 42%]
+tests/test_editor.py::test_wrap_text_breaks_long_word FAILED             [ 43%]
+tests/test_editor.py::test_wrap_text_width_zero_returns_text PASSED      [ 44%]
+tests/test_editor.py::test_visible_lines_wraps PASSED                    [ 45%]
+tests/test_editor.py::test_classify_char PASSED                          [ 45%]
+tests/test_editor.py::test_classify_ctrl_save PASSED                     [ 46%]
+tests/test_editor.py::test_classify_ctrl_preview PASSED                  [ 47%]
+tests/test_editor.py::test_classify_arrow_up PASSED                      [ 48%]
+tests/test_editor.py::test_classify_arrow_esc_sequences PASSED           [ 48%]
+tests/test_editor.py::test_classify_unknown PASSED                       [ 49%]
+tests/test_editor.py::test_classify_newline PASSED                       [ 50%]
+tests/test_editor.py::test_ctrl_keys_contains_expected PASSED            [ 51%]
+tests/test_editor.py::test_status_info_render_contains_fields FAILED     [ 51%]
+tests/test_editor.py::test_status_info_dirty_flag PASSED                 [ 52%]
+tests/test_editor.py::test_status_info_truncated_to_width PASSED         [ 53%]
+tests/test_editor.py::test_render_viewport_pads_short_content PASSED     [ 54%]
+tests/test_editor.py::test_render_viewport_keeps_cursor_visible PASSED   [ 54%]
+tests/test_editor.py::test_render_viewport_width_truncation PASSED       [ 55%]
+tests/test_editor.py::test_render_fullscreen_preview_structure FAILED    [ 56%]
+tests/test_editor.py::test_render_fullscreen_preview_truncates_long_text FAILED [ 57%]
+tests/test_editor.py::test_render_fullscreen_preview_shows_dirty_flag PASSED [ 57%]
+tests/test_marker_scan.py::test_patterns_non_empty PASSED                [ 58%]
+tests/test_marker_scan.py::test_scan_empty PASSED                        [ 59%]
+tests/test_marker_scan.py::test_scan_claude_closer PASSED                [ 60%]
+tests/test_marker_scan.py::test_scan_english_opener PASSED               [ 60%]
+tests/test_marker_scan.py::test_scan_no_false_positives_on_real_text PASSED [ 61%]
+tests/test_models.py::test_load_models_returns_dict PASSED               [ 62%]
+tests/test_models.py::test_get_model_names PASSED                        [ 62%]
+tests/test_models.py::test_all_expected_models_present PASSED            [ 63%]
+tests/test_models.py::test_default_model PASSED                          [ 64%]
+tests/test_models.py::test_default_model_matches_top_level PASSED        [ 65%]
+tests/test_models.py::test_validate_existing_model PASSED                [ 65%]
+tests/test_models.py::test_validate_nonexistent_model PASSED             [ 66%]
+tests/test_models.py::test_resolve_with_explicit_valid_model PASSED      [ 67%]
+tests/test_models.py::test_resolve_without_request_returns_default PASSED [ 68%]
+tests/test_models.py::test_resolve_with_invalid_model_raises PASSED      [ 68%]
+tests/test_models.py::test_resolve_fallback_when_yaml_missing PASSED     [ 69%]
+tests/test_models.py::test_format_model_list_contains_all_models PASSED  [ 70%]
+tests/test_models.py::test_format_model_list_marks_default PASSED        [ 71%]
+tests/test_models.py::test_model_configs_have_size_and_description PASSED [ 71%]
+tests/test_models.py::test_exactly_one_default_model PASSED              [ 72%]
+tests/test_multi_agent_washer.py::test_agent_models_has_three_entries PASSED [ 73%]
+tests/test_multi_agent_washer.py::test_agent_models_have_distinct_labels PASSED [ 74%]
+tests/test_multi_agent_washer.py::test_agent_models_have_required_keys PASSED [ 74%]
+tests/test_multi_agent_washer.py::test_wash_candidate_is_error_false_when_no_error PASSED [ 75%]
+tests/test_multi_agent_washer.py::test_wash_candidate_is_error_true_when_error_set PASSED [ 76%]
+tests/test_multi_agent_washer.py::test_rank_candidates_picks_lowest_score PASSED [ 77%]
+tests/test_multi_agent_washer.py::test_rank_candidates_excludes_errors_when_success_exists PASSED [ 77%]
+tests/test_multi_agent_washer.py::test_rank_candidates_all_failed_returns_first PASSED [ 78%]
+tests/test_multi_agent_washer.py::test_rank_candidates_empty_list_returns_empty PASSED [ 79%]
+tests/test_multi_agent_washer.py::test_format_summary_success PASSED     [ 80%]
+tests/test_multi_agent_washer.py::test_format_summary_error PASSED       [ 80%]
+tests/test_multi_agent_washer.py::test_format_results_table_lists_all_and_winner FAILED [ 81%]
+tests/test_multi_agent_washer.py::test_format_results_table_error_winner PASSED [ 82%]
+tests/test_multi_agent_washer.py::test_wash_with_model_success PASSED    [ 82%]
+tests/test_multi_agent_washer.py::test_wash_with_model_failure_returns_error_candidate PASSED [ 83%]
+tests/test_multi_agent_washer.py::test_multi_agent_wash_picks_best_and_verbose_runs PASSED [ 84%]
+tests/test_multi_agent_washer.py::test_multi_agent_wash_handles_one_failure PASSED [ 85%]
+tests/test_multi_agent_washer.py::test_multi_agent_wash_all_fail PASSED  [ 85%]
+tests/test_multi_agent_washer.py::test_build_parser_defaults PASSED      [ 86%]
+tests/test_multi_agent_washer.py::test_build_parser_dry_run PASSED       [ 87%]
+tests/test_stat_engine.py::test_tokenize PASSED                          [ 88%]
+tests/test_stat_engine.py::test_sentence_split PASSED                    [ 88%]
+tests/test_stat_engine.py::test_entropy_empty PASSED                     [ 89%]
+tests/test_stat_engine.py::test_entropy_uniform PASSED                   [ 90%]
+tests/test_stat_engine.py::test_entropy_repetitive PASSED                [ 91%]
+tests/test_stat_engine.py::test_burstiness_uniform PASSED                [ 91%]
+tests/test_stat_engine.py::test_burstiness_varied PASSED                 [ 92%]
+tests/test_stat_engine.py::test_green_list_ratio PASSED                  [ 93%]
+tests/test_stat_engine.py::test_analyze_text_basic PASSED                [ 94%]
+tests/test_stat_engine.py::test_analyze_text_human PASSED                [ 94%]
+tests/test_stat_engine.py::test_generate_prompt PASSED                   [ 95%]
+tests/test_stat_engine.py::test_type_token_ratio PASSED                  [ 96%]
+tests/test_stat_engine.py::test_type_token_ratio_repetitive PASSED       [ 97%]
+tests/test_stat_engine.py::test_zipf_coefficient PASSED                  [ 97%]
+tests/test_stat_engine.py::test_zipf_coefficient_short PASSED            [ 98%]
+tests/test_stat_engine.py::test_hapax_ratio PASSED                       [ 99%]
+tests/test_stat_engine.py::test_hapax_ratio_repetitive PASSED            [100%]
+
+================================== FAILURES ===================================
+_________________________ test_section_header_non_tty _________________________
+tests\test_cli_utils.py:95: in test_section_header_non_tty
+    assert "My Section" in captured.out
+E   AssertionError: assert 'My Section' in ''
+E    +  where '' = CaptureResult(out='', err='').out
+---------------------------- Captured stdout call -----------------------------
+My Section
+_________________________ test_read_input_text_stdin __________________________
+tests\test_cli_utils.py:128: in test_read_input_text_stdin
+    assert read_input_text(None) == "from stdin"
+E   AssertionError: assert '' == 'from stdin'
+E     
+E     - from stdin
+____________________ test_cli_entry_handles_file_not_found ____________________
+tests\test_cli_utils.py:248: in test_cli_entry_handles_file_not_found
+    assert "missing file" in err
+E   AssertionError: assert 'missing file' in ''
+---------------------------- Captured stderr call -----------------------------
+[91m[1mx[0m [91mmissing file[0m
+___________________ test_cli_entry_handles_directory_error ____________________
+tests\test_cli_utils.py:256: in test_cli_entry_handles_directory_error
+    assert "is a dir" in err
+E   AssertionError: assert 'is a dir' in ''
+---------------------------- Captured stderr call -----------------------------
+[91m[1mx[0m [91mis a dir[0m
+_____________________ test_cli_entry_handles_value_error ______________________
+tests\test_cli_utils.py:264: in test_cli_entry_handles_value_error
+    assert "bad value" in err
+E   AssertionError: assert 'bad value' in ''
+---------------------------- Captured stderr call -----------------------------
+[91m[1mx[0m [91mbad value[0m
+________________________ test_cursor_movement_clamped _________________________
+tests\test_editor.py:144: in test_cursor_movement_clamped
+    assert buf.cursor == CursorPos(1, 5)  # end of "world"
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: assert CursorPos(row=1, col=0) == CursorPos(row=1, col=5)
+E     
+E     Omitting 1 identical items, use -vv to show
+E     Differing attributes:
+E     ['col']
+E     
+E     Drill down into differing attribute col:
+E       col: 0 != 5
+_______________________ test_wrap_text_breaks_long_word _______________________
+tests\test_editor.py:189: in test_wrap_text_breaks_long_word
+    assert out == ["abc", "def", "gh"]
+E   AssertionError: assert ['abcdefgh'] == ['abc', 'def', 'gh']
+E     
+E     At index 0 diff: 'abcdefgh' != 'abc'
+E     Right contains 2 more items, first extra item: 'def'
+E     
+E     Full diff:
+E       [
+E     -     'abc',...
+E     
+E     ...Full output truncated (5 lines hidden), use '-vv' to show
+___________________ test_status_info_render_contains_fields ___________________
+tests\test_editor.py:245: in test_status_info_render_contains_fields
+    assert "Chars 16" in rendered
+E   AssertionError: assert 'Chars 16' in '   Ln 1, Col 1 Chars 15  Words 3  Lines 1 AI 70/100   Ctrl+P Preview  Ctrl+S Save  Ctrl+Q Quit  Ctrl'
+__________________ test_render_fullscreen_preview_structure ___________________
+tests\test_editor.py:297: in test_render_fullscreen_preview_structure
+    assert len(lines) == 10  # padded to height
+    ^^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: assert 9 == 10
+E    +  where 9 = len(['\x1b[1m\x1b[36m== WYSIWYG Preview (wrapped @ 40 cols) ==\x1b[0m', 'Hello world. This is a test.', 'Second line here.', '', '', '', ...])
+_____________ test_render_fullscreen_preview_truncates_long_text ______________
+tests\test_editor.py:310: in test_render_fullscreen_preview_truncates_long_text
+    assert len(lines) == 6  # height respected
+    ^^^^^^^^^^^^^^^^^^^^^^
+E   AssertionError: assert 5 == 6
+E    +  where 5 = len(['\x1b[1m\x1b[36m== WYSIWYG Preview (wrapped @ 40 cols) ==\x1b[0m', 'word word word word word word word word', 'word word word word word word word word', 'word word word word word word word word', '\x1b[2mChars 1000  Words 200  Lines 1  AI 90/100  clean\x1b[0m'])
+_______________ test_format_results_table_lists_all_and_winner ________________
+tests\test_multi_agent_washer.py:126: in test_format_results_table_lists_all_and_winner
+    assert "eurollm-9b (2.0s)" in table
+E   AssertionError: assert 'eurollm-9b (2.0s)' in 'Multi-Agent Wash Results\n================================================\n  WINNER [premium] eurollm-9b: AI=20.0 t=2.0s chars=1\n         [standard] llama3.2: AI=40.0 t=1.0s chars=1\n------------------------------------------------\nWinner: [premium] eurollm-9b (AI=20.0, 2.0s, 1 chars)'
+=========================== short test summary info ===========================
+FAILED tests/test_cli_utils.py::test_section_header_non_tty - AssertionError:...
+FAILED tests/test_cli_utils.py::test_read_input_text_stdin - AssertionError: ...
+FAILED tests/test_cli_utils.py::test_cli_entry_handles_file_not_found - Asser...
+FAILED tests/test_cli_utils.py::test_cli_entry_handles_directory_error - Asse...
+FAILED tests/test_cli_utils.py::test_cli_entry_handles_value_error - Assertio...
+FAILED tests/test_editor.py::test_cursor_movement_clamped - AssertionError: a...
+FAILED tests/test_editor.py::test_wrap_text_breaks_long_word - AssertionError...
+FAILED tests/test_editor.py::test_status_info_render_contains_fields - Assert...
+FAILED tests/test_editor.py::test_render_fullscreen_preview_structure - Asser...
+FAILED tests/test_editor.py::test_render_fullscreen_preview_truncates_long_text
+FAILED tests/test_multi_agent_washer.py::test_format_results_table_lists_all_and_winner
+======================= 11 failed, 124 passed in 2.07s ========================

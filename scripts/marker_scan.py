@@ -63,12 +63,12 @@ def scan(text: str) -> list[tuple[int, str, str, str]]:
     return hits
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="AI surface-marker scanner")
     p.add_argument("path", nargs="?", help="Input file (UTF-8). Omit with --stdin")
     p.add_argument("--stdin", action="store_true", help="Read text from stdin")
     p.add_argument("--json", action="store_true", help="Machine-readable lines")
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     if args.stdin or not args.path:
         text = sys.stdin.read()

@@ -46,6 +46,51 @@ python scripts/file_washer.py input.txt --output clean.txt
 python scripts/stat_prompt.py input.txt --preview --model darkest
 ```
 
+## Einheitliche CLI (claude-washer)
+
+Ein einziger Befehl leitet alle Werkzeuge weiter — jedes Subcommand-Modul
+wird lazy importiert, sodass ein defekter optionaler Abhängigkeit nie die
+ganze CLI bricht.
+
+| Befehl                       | Modul         | Aufgabe                                  |
+|------------------------------|---------------|------------------------------------------|
+| `claude-washer scan <f>`     | marker_scan   | AI-Oberflächen-Marker scannen            |
+| `claude-washer wash <f>`     | washer        | Einzelner LLM-Rewrite (lokal via Ollama) |
+| `claude-washer pipeline <f>` | pipeline      | Multi-Pass-Wash mit Presets              |
+| `claude-washer file <files>` | file_washer   | Batch-Wash: DOCX/MD/PDF/HTML/TXT         |
+| `claude-washer chat`         | chat          | Interaktiver Chat mit Ollama             |
+| `claude-washer edit [f]`     | editor        | Interaktiver Texteditor                  |
+| `claude-washer stat <f>`     | stat_engine   | Statistische Analyse (kein Ollama nötig) |
+| `claude-washer prompt <f>`   | stat_prompt   | Anti-Watermark-Prompt aus Statistik      |
+
+```bash
+# Batch + Glob + Verzeichnis (rekursiv mit -r)
+claude-washer file *.md --outdir cleaned/
+claude-washer file inputs/ -r --outdir cleaned/
+
+# Format-Erkennung überschreiben
+claude-washer file lie.txt --format pdf
+
+# Nur analysieren (kein Ollama-Aufruf)
+claude-washer file doc.pdf --dry-run
+
+# Einzelne Datei mit ausgegebener Ausgabedatei
+claude-washer file input.docx -o clean.txt
+```
+
+## Format-Erkennung & Batch-Verarbeitung
+
+`file_washer` erkennt das Dateiformat anhand **Magischer Bytes** (nicht der
+Endung), sodass z. B. `lie.txt` (das eigentlich eine PDF ist) korrekt als PDF
+verarbeitet wird. Unterstützte Formate: DOCX, PDF, XLSX, PPTX, EPUB, ODT, HTML
+und Markdown sowie TXT. Schwerpunkte (`python-docx`, `pymupdf`,
+`beautifulsoup4`, `openpyxl`, `python-pptx`) werden lazy importiert — das Tool
+läuft auch ohne sie (UTF-8-Fallback für PDF/Text).
+
+Eingaben dürfen mehrere Dateien, Shell-Globs (`*.md`) und Verzeichnisse sein.
+Ergebnisse werden jeweils als `<stem>.washed.txt` geschrieben — entweder neben
+der Quelldatei, in `--outdir` (Batch) oder explizit via `-o`/`--output`.
+
 ## Modellauswahl
 
 Alle CLI-Skripte akzeptieren `--model MODEL` und `--list-models`.

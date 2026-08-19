@@ -1,0 +1,16 @@
+import sys
+sys.path.insert(0, "scripts")
+import cli_utils
+print("import OK")
+print("Colors.enabled:", cli_utils.Colors.enabled)
+print("duration:", cli_utils.format_duration(0.05), cli_utils.format_duration(5.2), cli_utils.format_duration(125.0))
+print("section_header callable:", callable(cli_utils.section_header))
+print("ProgressBar callable:", callable(cli_utils.ProgressBar))
+print("init_terminal:", cli_utils.init_terminal())
+b = cli_utils.ProgressBar(total=3, label="test")
+b.start()
+b.advance()
+b.advance()
+b.advance()
+b.finish()
+print("all good")

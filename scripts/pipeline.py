@@ -27,6 +27,15 @@ from ollama_utils import (
     handle_list_models,
     resolve_model,
 )
+from cli_utils import (  # noqa: E402
+    ProgressBar,
+    add_common_args,
+    print_error,
+    print_info,
+    print_success,
+    read_input_text,
+    write_output_text,
+)
 
 # Model presets — speed vs quality tradeoffs.
 # Each preset can be overridden by an explicit --model flag.
@@ -203,9 +212,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main():
+def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.list_models:
         handle_list_models()
@@ -213,17 +222,13 @@ def main():
     if not args.input:
         parser.error("input file is required (or use --list-models)")
 
-    # Resolve model: explicit --model wins (validated), else use pool default.
     try:
         model = resolve_model(args.model, script_default="llama3.2")
     except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        print_error(str(exc))
         sys.exit(1)
 
-    if args.input == "-":
-        text = sys.stdin.read()
-    else:
-        text = Path(args.input).read_text(encoding="utf-8")
+    text = read_input_text(args.input, allow_stdin="-")
 
     # If --model was given, inject it into the "standard" preset so it
     # overrides the speed/quality presets while keeping the preset interface
@@ -236,16 +241,34 @@ def main():
         if args.temperature is not None:
             MODELS[preset]["temperature"] = args.temperature
 
-    if args.passes == 1:
-        result = wash_pass(text, preset)
-    else:
-        result = wash_multi_pass(text, preset, args.passes)
+    # Clamp passes to the documented 1-3 range.
+    passes = max(1, min(3, args.passes))
+
+    with ProgressBar(total=passes, label=f"wash ({preset})") as bar:
+        if passes == 1:
+            result = wash_pass(text, preset)
+            bar.advance()
+        else:
+            # Re-implement multi-pass inline so the progress bar advances per pass.
+            cfg = MODELS[preset]
+            current = text
+            total_start = time.time()
+            for _ in range(passes):
+                bar.advance()
+                current = call_ollama(
+                    prompt=current,
+                    model=cfg["model"],
+                    system_prompt=SYSTEM_PROMPT,
+                    temperature=cfg["temperature"],
+                    max_tokens=cfg["max_tokens"],
+                )
+            result = WashResult(current, cfg["model"], time.time() - total_start, passes)
 
     if args.output:
-        Path(args.output).write_text(result.text, encoding="utf-8")
-        print(
-            f"Wrote {args.output} ({result.duration:.1f}s, {result.passes} pass(es), model={result.model})",
-            file=sys.stderr,
+        write_output_text(args.output, result.text)
+        print_success(
+            f"Wrote {args.output} ({result.duration:.1f}s, "
+            f"{result.passes} pass(es), model={result.model})"
         )
     else:
         print(result.text)

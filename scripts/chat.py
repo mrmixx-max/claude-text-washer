@@ -102,11 +102,11 @@ def print_help() -> None:
 """)
 
 
-def main():
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Claude Text Washer — Chat with local Ollama")
     parser.add_argument("--model", default="llama3.2", help="Ollama model (default: llama3.2)")
     parser.add_argument("--system", default=SYSTEM_PROMPT, help="Custom system prompt")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     model = args.model
     system = args.system

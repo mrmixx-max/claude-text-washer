@@ -24,8 +24,8 @@ MENU_ITEMS = [
     ("analyze", "Analyze Text", "Run statistical watermark analysis", "default"),
     ("wash", "Wash Text", "Full text wash pipeline", "success"),
     ("wash_file", "Wash File", "Strip metadata from any file format", "success"),
+    ("multi_agent", "Multi-Agent Wash", "3 models in parallel, best AI-score wins", "primary"),
     ("prompt", "Prompt Editor", "Build anti-watermark prompts", "warning"),
-    ("benchmark", "Benchmark", "Compare AI vs human text metrics", "default"),
     ("settings", "Settings", "Model selection & configuration", "primary"),
 ]
 
@@ -37,13 +37,17 @@ def run_script(name: str) -> None:
         "analyze": "stat_engine.py",
         "wash": "pipeline.py",
         "wash_file": "file_washer.py",
+        "multi_agent": "multi_agent_washer.py",
         "prompt": "prompt_editor.py",
-        "benchmark": "bench.py",
     }
-    script = script_map.get(name)
-    if not script:
+    path = SCRIPT_DIR / script_map[name] if name in script_map else None
+    if name == "settings":
+        _show_settings()
         return
-    path = SCRIPT_DIR / script
+    if not path:
+        print(f"[NOT CONFIGRED] {name}")
+        input("Press Enter to return...")
+        return
     if not path.exists():
         print(f"[NOT FOUND] {path}")
         input("Press Enter to return...")
@@ -52,6 +56,21 @@ def run_script(name: str) -> None:
         subprocess.run([sys.executable, str(path)], cwd=str(PROJECT_ROOT))
     except KeyboardInterrupt:
         pass
+
+
+def _show_settings() -> None:
+    """Display the model pool configuration (read-only, no Ollama needed)."""
+    try:
+        from ollama_utils import format_model_list, get_default_model
+    except Exception:  # noqa: BLE001 — pragma: no cover
+        print("Settings unavailable (ollama_utils not importable)")
+        input("Press Enter to return...")
+        return
+    print("\nAvailable Ollama models:")
+    print(format_model_list())
+    print(f"\nDefault model: {get_default_model()}")
+    print("(* marks the default)\n")
+    input("Press Enter to return...")
 
 
 if HAS_TEXTUAL:
@@ -137,7 +156,7 @@ else:
                     idx = int(key) - 1
                 except ValueError:
                     continue
-                if idx == 7:
+                if idx == len(MENU_ITEMS):
                     break
                 if 0 <= idx < len(MENU_ITEMS):
                     run_script(MENU_ITEMS[idx][0])
@@ -155,7 +174,7 @@ else:
             print()
             for i, (key, label, desc, _) in enumerate(MENU_ITEMS, 1):
                 print(f"  [{i}] {label:20s}  {desc}")
-            print(f"  [8] Exit")
+            print(f"  [{len(MENU_ITEMS) + 1}] Exit")
             print()
             print("-" * 60)
 

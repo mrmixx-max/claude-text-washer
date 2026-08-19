@@ -16,7 +16,16 @@ from pathlib import Path
 # or when imported as part of the `scripts` package by pytest.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from ollama_utils import (
+from cli_utils import (  # noqa: E402
+    ProgressBar,
+    add_common_args,
+    add_io_args,
+    cli_entry,
+    print_success,
+    read_input_text,
+    write_output_text,
+)
+from ollama_utils import (  # noqa: E402
     SYSTEM_PROMPT,
     call_ollama,
     get_default_model,
@@ -43,26 +52,21 @@ def wash(text: str, model: str = "llama3.2", temperature: float = 0.8) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Claude Text Washer — strip AI markers")
-    parser.add_argument("input", nargs="?", help="Input text file or - for stdin")
-    parser.add_argument("-o", "--output", help="Output file (default: stdout)")
-    parser.add_argument(
-        "--model",
-        default=None,
-        help=f"Ollama model to use (default: {get_default_model()})",
+    parser = argparse.ArgumentParser(
+        description="Claude Text Washer - strip AI markers and rewrite organically",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature")
-    parser.add_argument(
-        "--list-models",
-        action="store_true",
-        help="List all available Ollama models and exit",
-    )
+    add_io_args(parser)
+    add_common_args(parser, include_temperature=True)
+    # washer.py historically defaults temperature to 0.8 (not None) so that
+    # wash() keeps its documented signature; expose it as an explicit default.
+    parser.set_defaults(temperature=0.8)
     return parser
 
 
-def main():
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.list_models:
         handle_list_models()
@@ -70,24 +74,24 @@ def main():
     if not args.input:
         parser.error("input file is required (or use --list-models)")
 
-    try:
+    with cli_entry():
         model = resolve_model(args.model, script_default="llama3.2")
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
+        text = read_input_text(args.input, allow_stdin="-")
 
-    if args.input == "-":
-        text = sys.stdin.read()
-    else:
-        text = Path(args.input).read_text(encoding="utf-8")
+        with ProgressBar(total=1, label="washing") as bar:
+            cleaned = wash(
+                text,
+                model=model,
+                temperature=args.temperature if args.temperature is not None else 0.8,
+            )
+            bar.advance()
 
-    cleaned = wash(text, model=model, temperature=args.temperature)
-
-    if args.output:
-        Path(args.output).write_text(cleaned, encoding="utf-8")
-        print(f"Wrote {args.output} (model={model})", file=sys.stderr)
-    else:
-        print(cleaned)
+        if args.output:
+            write_output_text(args.output, cleaned)
+            print_success(f"Wrote {args.output} (model={model})")
+        else:
+            print(cleaned)
+    return 0
 
 
 if __name__ == "__main__":

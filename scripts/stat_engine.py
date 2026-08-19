@@ -31,6 +31,13 @@ from ollama_utils import (
     handle_list_models,
     resolve_model,
 )
+from cli_utils import (  # noqa: E402
+    ProgressBar,
+    print_info,
+    print_success,
+    read_input_text,
+    write_output_text,
+)
 
 STAT_SYSTEM_PROMPT = (
     "Du bist ein Experten-Textredaktor. Schreibe Texte um, die wie menschlich "
@@ -300,7 +307,7 @@ def generate_anti_watermark_prompt(text: str, report: WatermarkReport) -> str:
     prompt = f"""Rewrite the following text to eliminate statistical AI markers while preserving meaning.
 
 Anti-watermark strategies to apply:
-{chr(10).join(f'- {s}' for s in strategies)}
+{chr(10).join(f"- {s}" for s in strategies)}
 
 Additional rules:
 - Break any rhythmic patterns in sentence structure
@@ -313,6 +320,46 @@ Original text:
 {text}"""
 
     return prompt
+
+
+def format_report(report: WatermarkReport, *, as_json: bool = False) -> str:
+    """Format a :class:`WatermarkReport` for human (or JSON) consumption.
+
+    Pure function — no I/O — suitable for unit testing.  When *as_json* is
+    ``True`` a deterministic JSON string is returned instead of the aligned
+    human-readable block.
+    """
+    if as_json:
+        import json
+
+        output = {
+            "perplexity": round(report.perplexity, 2),
+            "burstiness": round(report.burstiness, 3),
+            "ngram_bias": round(report.ngram_bias, 4),
+            "green_list_ratio": round(report.green_list_ratio, 3),
+            "sentence_entropy": round(report.sentence_entropy, 3),
+            "word_entropy": round(report.word_entropy, 3),
+            "type_token_ratio": round(report.type_token_ratio, 3),
+            "zipf_coefficient": round(report.zipf_coefficient, 3),
+            "hapax_ratio": round(report.hapax_ratio, 3),
+            "ai_score": round(report.ai_score, 1),
+            "details": report.details,
+        }
+        return json.dumps(output, indent=2)
+
+    lines = [
+        f"AI Score:      {report.ai_score:.1f}/100",
+        f"Perplexity:    {report.perplexity:.2f}",
+        f"Burstiness:    {report.burstiness:.3f}",
+        f"Word Entropy:  {report.word_entropy:.3f}",
+        f"Sent. Entropy: {report.sentence_entropy:.3f}",
+        f"Green-list:    {report.green_list_ratio:.3f}",
+        f"N-gram bias:   {report.ngram_bias:.4f}",
+        f"TTR:           {report.type_token_ratio:.3f}",
+        f"Zipf coeff:    {report.zipf_coefficient:.3f}",
+        f"Hapax ratio:   {report.hapax_ratio:.3f}",
+    ]
+    return "\n".join(lines)
 
 
 def wash_statistical(text: str, model: str = "llama3.2", temperature: float = 0.85) -> tuple[str, WatermarkReport]:
@@ -356,9 +403,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main():
+def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.list_models:
         handle_list_models()
@@ -369,50 +416,37 @@ def main():
     try:
         model = resolve_model(args.model, script_default="llama3.2")
     except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        from cli_utils import print_error
+        print_error(str(exc))
         sys.exit(1)
 
-    if args.input == "-":
-        text = sys.stdin.read()
-    else:
-        text = Path(args.input).read_text(encoding="utf-8")
-
-    report = analyze_text(text)
+    text = read_input_text(args.input, allow_stdin="-")
 
     if args.analyze_only:
-        output = {
-            "perplexity": round(report.perplexity, 2),
-            "burstiness": round(report.burstiness, 3),
-            "ngram_bias": round(report.ngram_bias, 4),
-            "green_list_ratio": round(report.green_list_ratio, 3),
-            "sentence_entropy": round(report.sentence_entropy, 3),
-            "word_entropy": round(report.word_entropy, 3),
-            "type_token_ratio": round(report.type_token_ratio, 3),
-            "zipf_coefficient": round(report.zipf_coefficient, 3),
-            "hapax_ratio": round(report.hapax_ratio, 3),
-            "ai_score": round(report.ai_score, 1),
-            "details": report.details,
-        }
+        report = analyze_text(text)
         if args.json:
-            print(json.dumps(output, indent=2))
+            print(format_report(report, as_json=True))
         else:
-            print(f"AI Score: {output['ai_score']}/100")
-            print(f"Perplexity: {output['perplexity']}")
-            print(f"Burstiness: {output['burstiness']}")
-            print(f"Word Entropy: {output['word_entropy']}")
-            print(f"Sentence Entropy: {output['sentence_entropy']}")
-            print(f"Green-list Ratio: {output['green_list_ratio']}")
-            print(f"N-gram Bias: {output['ngram_bias']}")
-            print(f"Type-Token Ratio: {output['type_token_ratio']}")
-            print(f"Zipf Coefficient: {output['zipf_coefficient']}")
-            print(f"Hapax Ratio: {output['hapax_ratio']}")
-    else:
+            print_info("Statistical watermark analysis:")
+            print(format_report(report))
+        return
+
+    report = analyze_text(text)
+    if not args.json:
+        print_info(f"Pre-wash AI score: {report.ai_score:.1f}/100")
+    with ProgressBar(total=1, label="statistical wash") as bar:
         cleaned, report = wash_statistical(text, model, args.temperature)
-        if args.output:
-            Path(args.output).write_text(cleaned, encoding="utf-8")
-            print(f"Wrote {args.output} (model={model})", file=sys.stderr)
-        else:
-            print(cleaned)
+        bar.advance()
+    post = analyze_text(cleaned)
+    print_info(
+        f"Post-wash AI score: {post.ai_score:.1f}/100 "
+        f"(was {report.ai_score:.1f})"
+    )
+    if args.output:
+        write_output_text(args.output, cleaned)
+        print_success(f"Wrote {args.output} (model={model})")
+    else:
+        print(cleaned)
 
 
 if __name__ == "__main__":

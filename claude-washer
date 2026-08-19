@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+"""claude-washer — unified entry point for claude-text-washer.
+
+Usage:
+    python claude-washer <command> [args...]
+    ./claude-washer <command> [args...]   # if marked executable
+
+Commands: scan, wash, pipeline, file, chat, edit, stat, prompt
+Run `claude-washer <command> --help` for per-command options.
+"""
+import os
+import sys
+
+# Make the project root importable regardless of CWD, so `scripts.cli` resolves.
+ROOT = os.path.dirname(os.path.abspath(__file__))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+from scripts.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

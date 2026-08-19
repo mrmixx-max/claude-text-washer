@@ -27,7 +27,14 @@ from ollama_utils import (
     handle_list_models,
     resolve_model,
 )
-from stat_engine import analyze_text, generate_anti_watermark_prompt
+from stat_engine import analyze_text, generate_anti_watermark_prompt, format_report  # noqa: E402
+from cli_utils import (  # noqa: E402
+    ProgressBar,
+    print_info,
+    print_success,
+    read_input_text,
+    write_output_text,
+)
 
 
 STAT_SYSTEM_PROMPT = (
@@ -93,9 +100,9 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main():
+def main(argv: list[str] | None = None) -> None:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.list_models:
         handle_list_models()
@@ -106,32 +113,29 @@ def main():
     try:
         model = resolve_model(args.model, script_default="llama3.2")
     except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        from cli_utils import print_error
+        print_error(str(exc))
         sys.exit(1)
 
-    if args.input == "-":
-        text = sys.stdin.read()
-    else:
-        text = Path(args.input).read_text(encoding="utf-8")
+    text = read_input_text(args.input, allow_stdin="-")
 
     if args.preview:
-        cleaned, report = preview_wash(text, model=model, temperature=args.temperature)
-        # Print a brief report to stderr, the washed text to stdout
-        print(f"AI Score: {report.ai_score:.1f}/100", file=sys.stderr)
-        print(f"Model: {model}", file=sys.stderr)
+        with ProgressBar(total=1, label="preview wash") as bar:
+            cleaned, report = preview_wash(text, model=model, temperature=args.temperature)
+            bar.advance()
+        print_info(f"AI Score: {report.ai_score:.1f}/100  Model: {model}", file=sys.stderr)
         if args.output:
-            Path(args.output).write_text(cleaned, encoding="utf-8")
-            print(f"[done] wrote {args.output} (model={model})", file=sys.stderr)
+            write_output_text(args.output, cleaned)
+            print_success(f"wrote {args.output} (model={model})")
         else:
             print(cleaned)
     else:
         prompt, report = build_prompt(text)
-        print(f"# Statistical watermark report (model={model})", file=sys.stderr)
-        print(f"AI Score: {report.ai_score:.1f}/100  Burstiness: {report.burstiness:.3f}", file=sys.stderr)
-        print(f"Word Entropy: {report.word_entropy:.2f}  Type-Token Ratio: {report.type_token_ratio:.3f}", file=sys.stderr)
+        print_info(f"Statistical watermark report (model={model})", file=sys.stderr)
+        print_info(format_report(report), file=sys.stderr)
         if args.output:
-            Path(args.output).write_text(prompt, encoding="utf-8")
-            print(f"[done] wrote {args.output}", file=sys.stderr)
+            write_output_text(args.output, prompt)
+            print_success(f"wrote {args.output}")
         else:
             print(prompt)
 
