@@ -1,0 +1,66 @@
+# Claude Text Washer — Ollama Model Pool
+# All models available via the local Ollama installation.
+# Used by every CLI script for --model selection, --list-models, and validation.
+#
+# Fields per model:
+#   size:        Approximate VRAM/disk footprint
+#   description: Human-readable description for --list-models output
+#   default:     Mark this model as the default (exactly one should be true)
+
+default: llama3.2
+
+models:
+  llama3.2:
+    size: "2GB"
+    description: "Meta Llama 3.2 — general purpose, default"
+    default: true
+
+  qwen-coder-7b:
+    size: "4.7GB"
+    description: "Qwen Coder 7B — coding assistant"
+    default: false
+
+  qwen-coder:
+    size: "9GB"
+    description: "Qwen Coder 9B — coding assistant, larger"
+    default: false
+
+  eurollm-9b:
+    size: "5.6GB"
+    description: "EuroLLM 9B — multilingual EU"
+    default: false
+
+  nemo-heretic:
+    size: "7.5GB"
+    description: "NeMo Heretic — uncensored reasoning"
+    default: false
+
+  darkest:
+    size: "9.6GB"
+    description: "Darkest — creative / storytelling"
+    default: false
+
+  gutenberg-26b:
+    size: "15GB"
+    description: "Gutenberg 26B — long-form writing"
+    default: false
+
+  lfm2-24b-a2b:
+    size: "14GB"
+    description: "LFM2 24B A2B — large language model"
+    default: false
+
+  qwen3-30b-a3b:
+    size: "17GB"
+    description: "Qwen3 30B A3B — MoE, highest quality"
+    default: false
+
+  lfm25-tool:
+    size: "2.2GB"
+    description: "LFM25 Tool — lightweight, fast"
+    default: false
+
+  gemma-4-e4b:
+    size: "6.8GB"
+    description: "Gemma 4 E4B — vision + language"
+    default: false

@@ -1,30 +1,40 @@
 #!/usr/bin/env python3
-"""Multi-pass text washing pipeline with swappable local LLMs."""
+"""Multi-pass text washing pipeline with swappable local LLMs.
+
+Supports any Ollama model from the pool defined in scripts/models.yaml.
+  --model MODEL       Select model (overrides --preset; default: llama3.2)
+  --list-models       Show all available models and exit
+  --preset NAME       Use a speed/quality preset (fast|standard|premium)
+  --passes N          Number of rewrite passes (1-3)
+  --temperature N     Override sampling temperature
+"""
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import time
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-# Model presets — speed vs quality tradeoffs
-MODELS = {
+# Ensure sibling modules (ollama_utils.py) are importable when run directly
+# or when imported as part of the `scripts` package by pytest.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from ollama_utils import (
+    SYSTEM_PROMPT,
+    call_ollama,
+    get_default_model,
+    handle_list_models,
+    resolve_model,
+)
+
+# Model presets — speed vs quality tradeoffs.
+# Each preset can be overridden by an explicit --model flag.
+MODELS: dict[str, dict] = {
     "fast": {"model": "lfm25-tool", "temperature": 0.7, "max_tokens": 512},
     "standard": {"model": "llama3.2", "temperature": 0.8, "max_tokens": 1024},
     "premium": {"model": "llama3.2", "temperature": 0.9, "max_tokens": 2048},
 }
-
-SYSTEM_PROMPT = """Du bist ein knallharter, menschlicher Lektor und Ghostwriter. Deine Aufgabe ist es, den übergebenen Text komplett neu zu verfassen und jegliche Muster von maschinell generierter Sprache restlos zu vernichten.
-
-Halte dich an folgende absolute Restriktionen:
-1. Burstiness maximieren: Wechsle radikal zwischen sehr kurzen, prägnanten Sätzen (1-4 Wörtern) und längeren, asymmetrischen Satzgefügen.
-2. Perplexität erzwingen: Nutze unkonventionelle, treffende Verben. Vermeide vorhersehbare Adjektiv-Substantiv-Kombinationen.
-3. Blacklist: Verwende NIEMALS Phrasen wie "Zusammenfassend lässt sich sagen", "Es ist wichtig zu beachten", "Ein weiteres Element" oder Wörter wie "facettenreich", "Geflecht", "Tapestry", "essenziell", "dynamisch".
-4. Tonalität: Organisch, direkt und menschlich. Lass es leicht kantig klingen, als käme es aus der Feder eines erfahrenen Thriller-Autors. Keine weichgespülte Objektivität.
-5. Output: Gib AUSSCHLIESSLICH den umgeschriebenen Text zurück. Keine Einleitungen, keine Erklärungen, keine Höflichkeitsfloskeln."""
 
 
 @dataclass
@@ -35,38 +45,26 @@ class WashResult:
     passes: int
 
 
-def call_ollama(text: str, model: str, temperature: float, max_tokens: int) -> str:
-    """Call local Ollama model via HTTP API (compatible with Ollama 0.32+)."""
-
-    payload = {
-        "model": model,
-        "system": SYSTEM_PROMPT,
-        "prompt": text,
-        "stream": False,
-        "options": {
-            "temperature": temperature,
-            "num_predict": max_tokens,
-        },
-    }
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        "http://127.0.0.1:11434/api/generate",
-        data=data,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            return result.get("response", "").strip()
-    except (urllib.error.URLError, OSError) as e:
-        raise RuntimeError(f"Ollama error ({model}): {e}")
-
-
 def wash_pass(text: str, preset: str = "standard") -> WashResult:
-    """Single-pass wash with specified model preset."""
+    """Single-pass wash with specified model preset.
+
+    Parameters
+    ----------
+    text:
+        Text to rewrite.
+    preset:
+        One of ``fast``, ``standard``, ``premium``. If a custom model was
+        injected via :func:`set_override_model`, it is used instead.
+    """
     cfg = MODELS[preset]
     start = time.time()
-    cleaned = call_ollama(text, cfg["model"], cfg["temperature"], cfg["max_tokens"])
+    cleaned = call_ollama(
+        prompt=text,
+        model=cfg["model"],
+        system_prompt=SYSTEM_PROMPT,
+        temperature=cfg["temperature"],
+        max_tokens=cfg["max_tokens"],
+    )
     duration = time.time() - start
     return WashResult(cleaned, cfg["model"], duration, 1)
 
@@ -80,46 +78,101 @@ def wash_multi_pass(text: str, preset: str = "standard", passes: int = 2) -> Was
     for i in range(passes):
         # Vary temperature slightly per pass for diversity
         temp = cfg["temperature"] + (i * 0.05)
-        current = call_ollama(current, cfg["model"], temp, cfg["max_tokens"])
+        current = call_ollama(
+            prompt=current,
+            model=cfg["model"],
+            system_prompt=SYSTEM_PROMPT,
+            temperature=temp,
+            max_tokens=cfg["max_tokens"],
+        )
 
     total_duration = time.time() - total_start
     return WashResult(current, cfg["model"], total_duration, passes)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Claude Text Washer — multi-pass AI marker removal")
-    parser.add_argument("input", help="Input text file or - for stdin")
+def _set_override_model(model: str, temperature: float | None = None) -> None:
+    """Override the 'standard' preset with a custom model.
+
+    This allows ``--model`` to override the preset-driven model while
+    keeping the preset interface intact for ``wash_pass`` / ``wash_multi_pass``.
+    """
+    cfg = MODELS["standard"]
+    cfg["model"] = model
+    if temperature is not None:
+        cfg["temperature"] = temperature
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Claude Text Washer — multi-pass AI marker removal"
+    )
+    parser.add_argument("input", nargs="?", help="Input text file or - for stdin")
     parser.add_argument("-o", "--output", help="Output file (default: stdout)")
-    parser.add_argument("--preset", choices=["fast", "standard", "premium"], default="standard",
-                        help="Model preset (fast=lfm25-tool, standard/premium=llama3.2)")
+    parser.add_argument(
+        "--preset",
+        choices=["fast", "standard", "premium"],
+        default="standard",
+        help="Model preset (fast=lfm25-tool, standard/premium=llama3.2)",
+    )
     parser.add_argument("--passes", type=int, default=1, help="Number of rewrite passes (1-3)")
-    parser.add_argument("--model", help="Override Ollama model (ignores --preset)")
-    parser.add_argument("--temperature", type=float, help="Override temperature")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=f"Override Ollama model (ignores --preset; default: {get_default_model()})",
+    )
+    parser.add_argument("--temperature", type=float, help="Override sampling temperature")
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List all available Ollama models and exit",
+    )
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
+
+    if args.list_models:
+        handle_list_models()
+
+    if not args.input:
+        parser.error("input file is required (or use --list-models)")
+
+    # Resolve model: explicit --model wins (validated), else use pool default.
+    try:
+        model = resolve_model(args.model, script_default="llama3.2")
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if args.input == "-":
         text = sys.stdin.read()
     else:
         text = Path(args.input).read_text(encoding="utf-8")
 
-    # Override model if specified
+    # If --model was given, inject it into the "standard" preset so it
+    # overrides the speed/quality presets while keeping the preset interface
+    # intact for wash_pass / wash_multi_pass.
     if args.model:
-        MODELS["standard"] = {
-            "model": args.model,
-            "temperature": args.temperature or 0.8,
-            "max_tokens": 1024,
-        }
-        args.preset = "standard"
+        _set_override_model(model, args.temperature)
+        preset = "standard"
+    else:
+        preset = args.preset
+        if args.temperature is not None:
+            MODELS[preset]["temperature"] = args.temperature
 
     if args.passes == 1:
-        result = wash_pass(text, args.preset)
+        result = wash_pass(text, preset)
     else:
-        result = wash_multi_pass(text, args.preset, args.passes)
+        result = wash_multi_pass(text, preset, args.passes)
 
     if args.output:
         Path(args.output).write_text(result.text, encoding="utf-8")
-        print(f"Wrote {args.output} ({result.duration:.1f}s, {result.passes} pass(es), model={result.model})",
-              file=sys.stderr)
+        print(
+            f"Wrote {args.output} ({result.duration:.1f}s, {result.passes} pass(es), model={result.model})",
+            file=sys.stderr,
+        )
     else:
         print(result.text)
 

@@ -3,16 +3,39 @@
 
 Detects and counters statistical watermarks (green-list bias, n-gram patterns)
 used by LLMs like Claude, GPT, and others.
+
+Supports any Ollama model from the pool defined in scripts/models.yaml.
+  --model MODEL       Select model (default: llama3.2)
+  --list-models       Show all available models and exit
+  --analyze-only      Only run statistical analysis, skip LLM washing
+  --json              Output analysis as JSON
 """
 from __future__ import annotations
 
 import json
 import math
 import re
-import urllib.request
+import sys
+import urllib.error
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+
+# Ensure sibling modules (ollama_utils.py) are importable when run directly
+# or when imported as part of the `scripts` package by pytest.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from ollama_utils import (
+    call_ollama,
+    get_default_model,
+    handle_list_models,
+    resolve_model,
+)
+
+STAT_SYSTEM_PROMPT = (
+    "Du bist ein Experten-Textredaktor. Schreibe Texte um, die wie menschlich "
+    "geschrieben wirken. Gib NUR den umgeschriebenen Text zurück."
+)
 
 
 @dataclass
@@ -57,7 +80,7 @@ def calculate_entropy(tokens: list[str]) -> float:
 
 def calculate_type_token_ratio(tokens: list[str]) -> float:
     """Calculate Type-Token Ratio (TTR) — vocabulary richness.
-    
+
     Higher TTR = more diverse vocabulary (more human-like).
     Lower TTR = repetitive vocabulary (more AI-like).
     """
@@ -69,7 +92,7 @@ def calculate_type_token_ratio(tokens: list[str]) -> float:
 
 def calculate_zipf_coefficient(tokens: list[str]) -> float:
     """Calculate Zipf coefficient — deviation from ideal Zipf distribution.
-    
+
     Human text follows Zipf's law. AI text often deviates.
     Returns slope of log(rank) vs log(freq) regression.
     """
@@ -97,7 +120,7 @@ def calculate_zipf_coefficient(tokens: list[str]) -> float:
 
 def calculate_hapax_ratio(tokens: list[str]) -> float:
     """Calculate hapax legomena ratio — words appearing only once.
-    
+
     Higher ratio = more unique words = more human-like.
     AI text tends to reuse vocabulary more.
     """
@@ -136,13 +159,13 @@ def analyze_ngrams(tokens: list[str], n: int = 2) -> dict:
 
 def detect_green_list_bias(tokens: list[str]) -> float:
     """Detect potential green-list watermark bias.
-    
+
     Green-list watermarks bias token selection toward a subset of vocabulary.
     This measures the ratio of "expected" vs "unexpected" tokens.
     """
     if not tokens:
         return 0.0
-    
+
     # Common English/German stopwords (expected in natural text)
     stopwords = {
         'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -152,7 +175,7 @@ def detect_green_list_bias(tokens: list[str]) -> float:
         'used', 'der', 'die', 'das', 'ein', 'eine', 'und', 'oder', 'aber', 'auf', 'zu', 'für', 'von', 'mit', 'bei', 'aus', 'als', 'ist', 'war',
         'sind', 'waren', 'sein', 'haben', 'hat', 'hatte', 'wird', 'würde', 'kann',
     }
-    
+
     stop_count = sum(1 for t in tokens if t.lower() in stopwords)
     return stop_count / len(tokens) if tokens else 0.0
 
@@ -161,7 +184,7 @@ def calculate_sentence_entropy(sentences: list[str]) -> float:
     """Calculate entropy across sentence structures."""
     if len(sentences) < 2:
         return 0.0
-    
+
     # Classify sentences by length category
     categories = []
     for s in sentences:
@@ -172,7 +195,7 @@ def calculate_sentence_entropy(sentences: list[str]) -> float:
             categories.append('medium')
         else:
             categories.append('long')
-    
+
     counts = Counter(categories)
     total = len(categories)
     entropy = 0.0
@@ -187,7 +210,7 @@ def analyze_text(text: str) -> WatermarkReport:
     """Full statistical analysis of text for AI watermark patterns."""
     tokens = tokenize(text)
     sentences = sentence_split(text)
-    
+
     if not tokens or not sentences:
         return WatermarkReport(
             perplexity=0.0, burstiness=0.0, ngram_bias=0.0,
@@ -195,7 +218,7 @@ def analyze_text(text: str) -> WatermarkReport:
             type_token_ratio=0.0, zipf_coefficient=0.0, hapax_ratio=0.0,
             ai_score=0.0, details={"error": "empty text"}
         )
-    
+
     perplexity = calculate_perplexity(tokens)
     burstiness = calculate_burstiness(sentences)
     word_entropy = calculate_entropy(tokens)
@@ -204,12 +227,12 @@ def analyze_text(text: str) -> WatermarkReport:
     type_token_ratio = calculate_type_token_ratio(tokens)
     zipf_coefficient = calculate_zipf_coefficient(tokens)
     hapax_ratio = calculate_hapax_ratio(tokens)
-    
+
     # N-gram bias (measure of repetitive patterns)
     bigrams = analyze_ngrams(tokens, 2)
     trigrams = analyze_ngrams(tokens, 3)
     ngram_bias = max(bigrams.values()) if bigrams else 0.0
-    
+
     # AI Score calculation (0-100)
     # Low burstiness + low entropy + high green-list ratio = likely AI
     ai_score = 0.0
@@ -229,7 +252,7 @@ def analyze_text(text: str) -> WatermarkReport:
         ai_score += 10
     if zipf_coefficient < 0.5:
         ai_score += 5
-    
+
     return WatermarkReport(
         perplexity=perplexity,
         burstiness=burstiness,
@@ -253,27 +276,27 @@ def analyze_text(text: str) -> WatermarkReport:
 
 def generate_anti_watermark_prompt(text: str, report: WatermarkReport) -> str:
     """Generate a prompt engineered to break statistical watermarks."""
-    
+
     strategies = []
-    
+
     if report.burstiness < 0.3:
         strategies.append("Vary sentence length dramatically: mix 3-word punches with 25-word flowing sentences.")
-    
+
     if report.word_entropy < 6.0:
         strategies.append("Use rare, specific vocabulary. Avoid predictable word pairs.")
-    
+
     if report.sentence_entropy < 0.8:
         strategies.append("Break structural patterns: alternate between statements, questions, and fragments.")
-    
+
     if report.green_list_ratio > 0.4:
         strategies.append("Reduce common function words. Use more nouns and verbs.")
-    
+
     if report.ngram_bias > 0.05:
         strategies.append("Avoid repetitive word sequences. Introduce unexpected transitions.")
-    
+
     if not strategies:
         strategies.append("Text appears natural. Maintain current style with minor variations.")
-    
+
     prompt = f"""Rewrite the following text to eliminate statistical AI markers while preserving meaning.
 
 Anti-watermark strategies to apply:
@@ -288,63 +311,74 @@ Additional rules:
 
 Original text:
 {text}"""
-    
+
     return prompt
 
 
 def wash_statistical(text: str, model: str = "llama3.2", temperature: float = 0.85) -> tuple[str, WatermarkReport]:
-    """Wash text using statistical analysis + engineered prompt."""
+    """Wash text using statistical analysis + engineered prompt.
+
+    Any model from the models.yaml pool is accepted.
+    """
     report = analyze_text(text)
     prompt = generate_anti_watermark_prompt(text, report)
-    
-    # Call Ollama with engineered prompt
-    payload = {
-        "model": model,
-        "system": "Du bist ein Experten-Textredaktor. Schreibe Texte um, die wie menschlich geschrieben wirken. Gib NUR den umgeschriebenen Text zurück.",
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": temperature,
-            "num_predict": 2048,
-        },
-    }
-    
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        "http://127.0.0.1:11434/api/generate",
-        data=data,
-        headers={"Content-Type": "application/json"},
+
+    cleaned = call_ollama(
+        prompt=prompt,
+        model=model,
+        system_prompt=STAT_SYSTEM_PROMPT,
+        temperature=temperature,
+        max_tokens=2048,
     )
-    
-    try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            cleaned = result.get("response", "").strip()
-            return cleaned, report
-    except (urllib.error.URLError, OSError) as e:
-        raise RuntimeError(f"Ollama error ({model}): {e}")
+    return cleaned, report
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     """CLI for statistical watermark analysis."""
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Statistical AI watermark detection")
-    parser.add_argument("input", help="Input text file or - for stdin")
+    parser.add_argument("input", nargs="?", help="Input text file or - for stdin")
     parser.add_argument("-o", "--output", help="Output file for washed text")
-    parser.add_argument("--model", default="llama3.2", help="Ollama model")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help=f"Ollama model to use (default: {get_default_model()})",
+    )
     parser.add_argument("--temperature", type=float, default=0.85, help="Sampling temperature")
     parser.add_argument("--analyze-only", action="store_true", help="Only analyze, don't wash")
     parser.add_argument("--json", action="store_true", help="Output as JSON")
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List all available Ollama models and exit",
+    )
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
-    
+
+    if args.list_models:
+        handle_list_models()
+
+    if not args.input:
+        parser.error("input file is required (or use --list-models)")
+
+    try:
+        model = resolve_model(args.model, script_default="llama3.2")
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
     if args.input == "-":
-        text = __import__("sys").stdin.read()
+        text = sys.stdin.read()
     else:
         text = Path(args.input).read_text(encoding="utf-8")
-    
+
     report = analyze_text(text)
-    
+
     if args.analyze_only:
         output = {
             "perplexity": round(report.perplexity, 2),
@@ -373,10 +407,10 @@ def main():
             print(f"Zipf Coefficient: {output['zipf_coefficient']}")
             print(f"Hapax Ratio: {output['hapax_ratio']}")
     else:
-        cleaned, report = wash_statistical(text, args.model, args.temperature)
+        cleaned, report = wash_statistical(text, model, args.temperature)
         if args.output:
             Path(args.output).write_text(cleaned, encoding="utf-8")
-            print(f"Wrote {args.output}", file=__import__("sys").stderr)
+            print(f"Wrote {args.output} (model={model})", file=sys.stderr)
         else:
             print(cleaned)
 
