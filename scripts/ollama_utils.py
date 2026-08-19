@@ -10,7 +10,11 @@ Provides:
 from __future__ import annotations
 
 import json
+import random
+import socket
 import sys
+import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -19,6 +23,21 @@ from typing import Any
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 DEFAULT_TEMPERATURE = 0.8
 DEFAULT_MAX_TOKENS = 1024
+
+# --- retry / robustness configuration ---------------------------------------
+DEFAULT_TIMEOUT = 300          # seconds — per HTTP request
+DEFAULT_MAX_RETRIES = 3        # attempts after the initial call that fail transitively
+DEFAULT_BACKOFF_BASE = 1.0     # seconds — initial backoff
+DEFAULT_BACKOFF_MAX = 10.0     # seconds — cap on a single backoff sleep
+
+# HTTP status codes worth retrying (transient server-side failures).
+# 429 = rate-limited, 502/503/504 = gateway / service unavailable.
+_RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
+
+# Exception types that indicate a *transient* failure worth retrying.
+# socket.timeout is a subclass of OSError on Python ≥ 3.10, but we list it
+# explicitly for clarity and older interpreters.
+_RETRYABLE_EXC_TYPES = (urllib.error.URLError, OSError, socket.timeout)
 
 # Default system prompt — shared across all washer scripts.
 SYSTEM_PROMPT = """Du bist ein knallharter, menschlicher Lektor und Ghostwriter. Deine Aufgabe ist es, den übergebenen Text komplett neu zu verfassen und jegliche Muster von maschinell generierter Sprache restlos zu vernichten.
@@ -31,9 +50,11 @@ Halte dich an folgende absolute Restriktionen:
 5. Output: Gib AUSSCHLIESSLICH den umgeschriebenen Text zurück. Keine Einleitungen, keine Erklärungen, keine Höflichkeitsfloskeln."""
 
 # --- module-level cache for loaded model pool ---------------------------------
-
+# Guarded by ``_models_lock`` so parallel workers (ThreadPoolExecutor) that
+# race on first access don't each re-read & re-parse models.yaml.
 _models_cache: dict[str, Any] | None = None
 _models_file_cache: Path | None = None
+_models_lock = threading.Lock()
 
 
 def _models_file() -> Path:
@@ -47,23 +68,32 @@ def load_models() -> dict[str, Any]:
 
     Returns a dict with an optional ``default`` key plus a ``models`` mapping
     of ``model_name -> {size, description, default}``.
+
+    Thread-safe: the YAML is parsed at most once thanks to a module-level
+    lock and double-checked locking, so parallel ``wash_batch`` workers
+    never contend on file I/O.
     """
     global _models_cache
     global _models_file_cache
     path = _models_file()
-    if _models_file_cache != path or _models_cache is None:
-        try:
-            import yaml  # PyYAML
-        except ImportError:
-            raise RuntimeError(
-                "PyYAML is required to read models.yaml. "
-                "Install with:  uv pip install pyyaml"
-            )
-        with open(path, encoding="utf-8") as fh:
-            data = yaml.safe_load(fh) or {}
-        _models_cache = data
-        _models_file_cache = path
-    return _models_cache
+    # Fast path — cache already warm for this file, no lock needed.
+    if _models_cache is not None and _models_file_cache == path:
+        return _models_cache
+    with _models_lock:
+        # Re-check inside the lock (another thread may have loaded it).
+        if _models_file_cache != path or _models_cache is None:
+            try:
+                import yaml  # PyYAML
+            except ImportError:
+                raise RuntimeError(
+                    "PyYAML is required to read models.yaml. "
+                    "Install with:  uv pip install pyyaml"
+                )
+            with open(path, encoding="utf-8") as fh:
+                data = yaml.safe_load(fh) or {}
+            _models_cache = data
+            _models_file_cache = path
+        return _models_cache
 
 
 def get_model_names() -> list[str]:
@@ -129,15 +159,43 @@ def handle_list_models() -> None:
     sys.exit(0)
 
 
+def _sleep_backoff(attempt: int, base: float, maximum: float) -> None:
+    """Sleep before a retry using exponential backoff with full jitter.
+
+    ``attempt`` is the zero-based retry index (0 = first retry).
+    The sleep is ``random.uniform(0, cap)`` where
+    ``cap = min(base * 2**attempt, maximum)`` — "full jitter" is the
+    recommended backoff strategy for retrying transient failures.
+    """
+    cap = min(base * (2 ** attempt), maximum)
+    time.sleep(random.uniform(0, cap))
+
+
+def _is_retryable_exception(exc: BaseException) -> bool:
+    """Return True if *exc* represents a transient Ollama failure to retry."""
+    # HTTPError carries a .code we check separately, but is also a URLError.
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code in _RETRYABLE_HTTP_STATUS
+    return isinstance(exc, _RETRYABLE_EXC_TYPES)
+
+
 def call_ollama(
     prompt: str,
     model: str,
     system_prompt: str = "",
     temperature: float = DEFAULT_TEMPERATURE,
     max_tokens: int = DEFAULT_MAX_TOKENS,
-    timeout: int = 300,
+    timeout: int = DEFAULT_TIMEOUT,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    backoff_base: float = DEFAULT_BACKOFF_BASE,
+    backoff_max: float = DEFAULT_BACKOFF_MAX,
 ) -> str:
     """Call a local Ollama model via HTTP and return the response text.
+
+    Retries with exponential backoff + jitter on *transient* failures
+    (``URLError`` / ``OSError`` / ``socket.timeout`` and HTTP 429 & 5xx).
+    Non-retryable failures (e.g. HTTP 400 Bad Request, a 404 for a missing
+    model) raise immediately.
 
     Parameters
     ----------
@@ -152,7 +210,14 @@ def call_ollama(
     max_tokens:
         Maximum tokens to generate (``num_predict`` in Ollama).
     timeout:
-        Request timeout in seconds.
+        Per-request HTTP timeout in seconds.
+    max_retries:
+        Number of *additional* attempts after the initial call fails
+        transiently (default 3).
+    backoff_base:
+        Base seconds for exponential backoff (default 1.0).
+    backoff_max:
+        Cap on a single backoff sleep in seconds (default 10.0).
     """
     payload: dict[str, Any] = {
         "model": model,
@@ -165,17 +230,38 @@ def call_ollama(
         },
     }
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        OLLAMA_URL,
-        data=data,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
-            return result.get("response", "").strip()
-    except (urllib.error.URLError, OSError) as exc:
-        raise RuntimeError(f"Ollama error ({model}): {exc}")
+
+    last_exc: BaseException | None = None
+    for attempt in range(max_retries + 1):
+        req = urllib.request.Request(
+            OLLAMA_URL,
+            data=data,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                return result.get("response", "").strip()
+        except urllib.error.HTTPError as exc:
+            # HTTPError is a subclass of URLError but carries a status code.
+            # Only retry on server-side / rate-limit codes.
+            if exc.code in _RETRYABLE_HTTP_STATUS and attempt < max_retries:
+                last_exc = exc
+                _sleep_backoff(attempt, backoff_base, backoff_max)
+                continue
+            raise RuntimeError(f"Ollama error ({model}): {exc}") from exc
+        except _RETRYABLE_EXC_TYPES as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                _sleep_backoff(attempt, backoff_base, backoff_max)
+                continue
+            raise RuntimeError(f"Ollama error ({model}): {exc}") from exc
+        except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
+            # Malformed response — not retryable (retry won't fix a parse error).
+            raise RuntimeError(f"Ollama malformed response ({model}): {exc}") from exc
+
+    # Exhausted retries. Should be unreachable, but guard anyway.
+    raise RuntimeError(f"Ollama error ({model}): {last_exc}") from last_exc
 
 
 def resolve_model(

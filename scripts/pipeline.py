@@ -90,6 +90,80 @@ def wash_multi_pass(text: str, preset: str = "standard", passes: int = 2) -> Was
     return WashResult(current, cfg["model"], total_duration, passes)
 
 
+def resolve_preset(
+    preset: str = "standard",
+    model: str | None = None,
+    temperature: float | None = None,
+) -> dict:
+    """Resolve a model config dict for *preset* with optional overrides.
+
+    Unlike :func:`_set_override_model`, this returns a **fresh copy** and
+    never mutates the shared ``MODELS`` mapping, so it is safe to call
+    concurrently from parallel wash workers (no shared-global race).
+    """
+    base = MODELS.get(preset, MODELS["standard"])
+    cfg = dict(base)  # shallow copy — enough, values are immutable scalars
+    if model:
+        cfg["model"] = model
+    if temperature is not None:
+        cfg["temperature"] = temperature
+    return cfg
+
+
+def wash_pass_cfg(
+    text: str,
+    cfg: dict,
+    *,
+    max_retries: int = 3,
+    timeout: int = 300,
+) -> WashResult:
+    """Single-pass wash using an explicit config dict (thread-safe).
+
+    *cfg* must contain ``model``, ``temperature`` and ``max_tokens`` keys,
+    e.g. as produced by :func:`resolve_preset`.
+    """
+    start = time.time()
+    cleaned = call_ollama(
+        prompt=text,
+        model=cfg["model"],
+        system_prompt=SYSTEM_PROMPT,
+        temperature=cfg["temperature"],
+        max_tokens=cfg["max_tokens"],
+        timeout=timeout,
+        max_retries=max_retries,
+    )
+    return WashResult(cleaned, cfg["model"], time.time() - start, 1)
+
+
+def wash_multi_pass_cfg(
+    text: str,
+    cfg: dict,
+    passes: int = 2,
+    *,
+    max_retries: int = 3,
+    timeout: int = 300,
+) -> WashResult:
+    """Multi-pass wash using an explicit config dict (thread-safe).
+
+    Temperature is varied slightly per pass for diversity, mirroring
+    :func:`wash_multi_pass` but without touching global state.
+    """
+    current = text
+    total_start = time.time()
+    for i in range(passes):
+        temp = cfg["temperature"] + (i * 0.05)
+        current = call_ollama(
+            prompt=current,
+            model=cfg["model"],
+            system_prompt=SYSTEM_PROMPT,
+            temperature=temp,
+            max_tokens=cfg["max_tokens"],
+            timeout=timeout,
+            max_retries=max_retries,
+        )
+    return WashResult(current, cfg["model"], time.time() - total_start, passes)
+
+
 def _set_override_model(model: str, temperature: float | None = None) -> None:
     """Override the 'standard' preset with a custom model.
 
