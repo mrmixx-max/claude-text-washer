@@ -30,6 +30,17 @@ DEFAULT_MAX_RETRIES = 3        # attempts after the initial call that fail trans
 DEFAULT_BACKOFF_BASE = 1.0     # seconds — initial backoff
 DEFAULT_BACKOFF_MAX = 10.0     # seconds — cap on a single backoff sleep
 
+# --- circuit breaker configuration ------------------------------------------
+# A circuit breaker per model prevents a persistently-failing (e.g. repeatedly
+# rate-limited 429) model from consuming retry/headoff budget and cascading
+# failures across the parallel multi-agent washer.  After
+# ``DEFAULT_CB_FAILURE_THRESHOLD`` *consecutive* failed ``call_ollama`` calls
+# the breaker trips OPEN; subsequent calls fail fast for
+# ``DEFAULT_CB_COOLDOWN`` seconds before a single half-open probe is allowed.
+DEFAULT_CB_FAILURE_THRESHOLD = 3   # consecutive failures before tripping
+DEFAULT_CB_COOLDOWN = 30.0         # seconds the breaker stays OPEN
+DEFAULT_CB_HALF_OPEN_MAX_CALLS = 1  # probes allowed per half-open cycle
+
 # HTTP status codes worth retrying (transient server-side failures).
 # 429 = rate-limited, 502/503/504 = gateway / service unavailable.
 _RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
@@ -38,6 +49,146 @@ _RETRYABLE_HTTP_STATUS = frozenset({429, 500, 502, 503, 504})
 # socket.timeout is a subclass of OSError on Python ≥ 3.10, but we list it
 # explicitly for clarity and older interpreters.
 _RETRYABLE_EXC_TYPES = (urllib.error.URLError, OSError, socket.timeout)
+
+
+# --------------------------------------------------------------------------- #
+# Circuit breaker — per-model, thread-safe
+# --------------------------------------------------------------------------- #
+class CircuitBreakerOpenError(RuntimeError):
+    """Raised when a model's circuit breaker is OPEN.
+
+    Failing fast avoids exhausting retry/backoff budget (and triggering a
+    cascade of retries across the parallel multi-agent washer) when a model
+    is persistently failing — e.g. returning repeated HTTP 429 responses.
+    """
+
+
+class CircuitBreaker:
+    """Per-model circuit breaker (Closed → Open → Half-Open → Closed).
+
+    Only *consecutive* failures trip the breaker: a single ``record_success``
+    resets the failure counter and closes the circuit.
+
+    Thread-safe via an internal lock.
+    """
+
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+    def __init__(
+        self,
+        model: str,
+        failure_threshold: int = DEFAULT_CB_FAILURE_THRESHOLD,
+        cooldown: float = DEFAULT_CB_COOLDOWN,
+        half_open_max_calls: int = DEFAULT_CB_HALF_OPEN_MAX_CALLS,
+    ) -> None:
+        self.model = model
+        self.failure_threshold = failure_threshold
+        self.cooldown = cooldown
+        self.half_open_max_calls = half_open_max_calls
+        self._lock = threading.Lock()
+        self._state = self.CLOSED
+        self._failure_count = 0
+        self._opened_at: float = 0.0
+        self._half_open_probes = 0
+
+    @property
+    def state(self) -> str:
+        """Current state (read-only snapshot)."""
+        with self._lock:
+            return self._state
+
+    @property
+    def failure_count(self) -> int:
+        with self._lock:
+            return self._failure_count
+
+    def is_open(self) -> bool:
+        """Return True if the breaker is currently OPEN (fail-fast).
+
+        If the breaker is OPEN but the cooldown has elapsed, it transitions
+        to HALF-OPEN and returns False so a single probe request is allowed
+        through.
+        """
+        with self._lock:
+            if self._state == self.OPEN:
+                if (time.time() - self._opened_at) >= self.cooldown:
+                    self._state = self.HALF_OPEN
+                    self._half_open_probes = 0
+                else:
+                    return True
+            return False
+
+    def record_success(self) -> None:
+        """Record a successful call — resets the breaker to CLOSED."""
+        with self._lock:
+            self._failure_count = 0
+            self._state = self.CLOSED
+            self._half_open_probes = 0
+
+    def record_failure(self) -> None:
+        """Record a failed call; trip OPEN once the threshold is reached."""
+        with self._lock:
+            self._failure_count += 1
+            if self._state == self.HALF_OPEN:
+                # A probe failed — re-open immediately.
+                self._state = self.OPEN
+                self._opened_at = time.time()
+                return
+            if self._failure_count >= self.failure_threshold:
+                self._state = self.OPEN
+                self._opened_at = time.time()
+
+    def allow_probe(self) -> bool:
+        """In HALF-OPEN, allow up to ``half_open_max_calls`` probe(s)."""
+        with self._lock:
+            if self._state != self.HALF_OPEN:
+                return False
+            if self._half_open_probes < self.half_open_max_calls:
+                self._half_open_probes += 1
+                return True
+            return False
+
+
+# --- module-level breaker registry ------------------------------------------
+# One CircuitBreaker per model name, shared across threads so the parallel
+# multi-agent workers all observe the same trip state.
+_circuit_breakers: dict[str, CircuitBreaker] = {}
+_circuit_breakers_lock = threading.Lock()
+
+
+def get_circuit_breaker(
+    model: str,
+    failure_threshold: int = DEFAULT_CB_FAILURE_THRESHOLD,
+    cooldown: float = DEFAULT_CB_COOLDOWN,
+    half_open_max_calls: int = DEFAULT_CB_HALF_OPEN_MAX_CALLS,
+) -> CircuitBreaker:
+    """Return the shared :class:`CircuitBreaker` for *model* (creating it once)."""
+    with _circuit_breakers_lock:
+        cb = _circuit_breakers.get(model)
+        if cb is None:
+            cb = CircuitBreaker(
+                model,
+                failure_threshold=failure_threshold,
+                cooldown=cooldown,
+                half_open_max_calls=half_open_max_calls,
+            )
+            _circuit_breakers[model] = cb
+        return cb
+
+
+def reset_circuit_breakers() -> None:
+    """Clear the entire breaker registry (test helper / admin escape hatch)."""
+    with _circuit_breakers_lock:
+        _circuit_breakers.clear()
+
+
+def get_circuit_breaker_state(model: str) -> str:
+    """Return the state name of the breaker for *model*, or ``'absent'``."""
+    with _circuit_breakers_lock:
+        cb = _circuit_breakers.get(model)
+    return cb.state if cb is not None else "absent"
 
 # Default system prompt — shared across all washer scripts.
 SYSTEM_PROMPT = """Du bist ein knallharter, menschlicher Lektor und Ghostwriter. Deine Aufgabe ist es, den übergebenen Text komplett neu zu verfassen und jegliche Muster von maschinell generierter Sprache restlos zu vernichten.
@@ -189,6 +340,8 @@ def call_ollama(
     max_retries: int = DEFAULT_MAX_RETRIES,
     backoff_base: float = DEFAULT_BACKOFF_BASE,
     backoff_max: float = DEFAULT_BACKOFF_MAX,
+    cb_failure_threshold: int = DEFAULT_CB_FAILURE_THRESHOLD,
+    cb_cooldown: float = DEFAULT_CB_COOLDOWN,
 ) -> str:
     """Call a local Ollama model via HTTP and return the response text.
 
@@ -196,6 +349,14 @@ def call_ollama(
     (``URLError`` / ``OSError`` / ``socket.timeout`` and HTTP 429 & 5xx).
     Non-retryable failures (e.g. HTTP 400 Bad Request, a 404 for a missing
     model) raise immediately.
+
+    A per-model **circuit breaker** wraps the retries: after
+    ``cb_failure_threshold`` *consecutive* failed calls the breaker trips
+    OPEN and further calls to that model fail fast with
+    :class:`CircuitBreakerOpenError` — preventing a persistently
+    rate-limited (429) model from cascading retries across the parallel
+    multi-agent washer.  The breaker closes again on the first success
+    (or after ``cb_cooldown`` seconds when in HALF-OPEN).
 
     Parameters
     ----------
@@ -218,7 +379,28 @@ def call_ollama(
         Base seconds for exponential backoff (default 1.0).
     backoff_max:
         Cap on a single backoff sleep in seconds (default 10.0).
+    cb_failure_threshold:
+        Consecutive failures required to trip the circuit breaker (default 3).
+    cb_cooldown:
+        Seconds the breaker stays OPEN before a half-open probe is allowed
+        (default 30.0).
     """
+    breaker = get_circuit_breaker(
+        model,
+        failure_threshold=cb_failure_threshold,
+        cooldown=cb_cooldown,
+    )
+    if breaker.is_open():
+        # Fail fast: the model has been persistently unhealthy (e.g. repeated
+        # 429s).  Raising here skips the HTTP call and its retry/backoff loop,
+        # so rate-limited models don't cascade retries into the other workers.
+        raise CircuitBreakerOpenError(
+            f"Circuit breaker OPEN for model '{model}' after "
+            f"{breaker.failure_count} consecutive failures — failing fast "
+            f"(cooldown {cb_cooldown}s). This prevents cascading retries "
+            f"across parallel agents."
+        ) from None
+
     payload: dict[str, Any] = {
         "model": model,
         "system": system_prompt,
@@ -241,26 +423,34 @@ def call_ollama(
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 result = json.loads(resp.read().decode("utf-8"))
+                breaker.record_success()
                 return result.get("response", "").strip()
         except urllib.error.HTTPError as exc:
             # HTTPError is a subclass of URLError but carries a status code.
             # Only retry on server-side / rate-limit codes.
-            if exc.code in _RETRYABLE_HTTP_STATUS and attempt < max_retries:
-                last_exc = exc
-                _sleep_backoff(attempt, backoff_base, backoff_max)
-                continue
+            if exc.code in _RETRYABLE_HTTP_STATUS:
+                if attempt < max_retries:
+                    last_exc = exc
+                    _sleep_backoff(attempt, backoff_base, backoff_max)
+                    continue
+                # Retries exhausted on a *retryable* status (e.g. 429) — the
+                # model is persistently unhealthy, so trip the circuit breaker.
+                breaker.record_failure()
             raise RuntimeError(f"Ollama error ({model}): {exc}") from exc
         except _RETRYABLE_EXC_TYPES as exc:
             last_exc = exc
             if attempt < max_retries:
                 _sleep_backoff(attempt, backoff_base, backoff_max)
                 continue
+            breaker.record_failure()
             raise RuntimeError(f"Ollama error ({model}): {exc}") from exc
         except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
-            # Malformed response — not retryable (retry won't fix a parse error).
+            # Malformed response — not retryable (retry won't fix a parse error)
+            # and not a transient/429 condition, so we do NOT trip the breaker.
             raise RuntimeError(f"Ollama malformed response ({model}): {exc}") from exc
 
     # Exhausted retries. Should be unreachable, but guard anyway.
+    breaker.record_failure()
     raise RuntimeError(f"Ollama error ({model}): {last_exc}") from last_exc
 
 

@@ -33,6 +33,10 @@ SUBCOMMANDS: dict[str, tuple[str, str]] = {
     "scan": ("marker_scan", "Scan text for AI surface markers"),
     "wash": ("washer", "Single-pass AI-marker rewrite via local Ollama"),
     "pipeline": ("pipeline", "Multi-pass wash with presets (fast/standard/premium)"),
+    "multi-agent": (
+        "multi_agent_washer",
+        "3 models in parallel, lowest AI-score rewrite wins (+ --benchmark)",
+    ),
     "file": ("file_washer", "Batch wash files (docx/md/pdf/html/txt), globs & dirs"),
     "chat": ("chat", "Interactive chat with local Ollama models"),
     "edit": ("editor", "Interactive text editor with live AI score"),

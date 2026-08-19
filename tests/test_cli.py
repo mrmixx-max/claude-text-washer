@@ -13,7 +13,17 @@ from scripts import cli
 
 FIXTURES = Path(__file__).resolve().parents[1] / "_fixtures"
 
-EXPECTED_COMMANDS = {"scan", "wash", "pipeline", "file", "chat", "edit", "stat", "prompt"}
+EXPECTED_COMMANDS = {
+    "scan",
+    "wash",
+    "pipeline",
+    "multi-agent",
+    "file",
+    "chat",
+    "edit",
+    "stat",
+    "prompt",
+}
 
 
 def test_subcommands_registered():
@@ -47,7 +57,7 @@ def test_subcommand_module_loads():
         assert callable(getattr(mod, "main", None)), f"{modname} missing main()"
 
 
-@pytest.mark.parametrize("cmd", ["file", "wash", "scan", "pipeline"])
+@pytest.mark.parametrize("cmd", ["file", "wash", "scan", "pipeline", "multi-agent"])
 def test_subcommand_help_exits_zero(cmd):
     with pytest.raises(SystemExit) as e:
         cli.main([cmd, "--help"])

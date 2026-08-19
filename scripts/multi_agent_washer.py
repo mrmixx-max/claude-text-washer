@@ -17,10 +17,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import math
+import statistics
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Ensure sibling modules (ollama_utils.py) are importable when run directly
@@ -212,6 +214,122 @@ def multi_agent_wash(text: str, verbose: bool = False) -> WashCandidate:
     return best
 
 
+# --------------------------------------------------------------------------- #
+# Benchmarking
+# --------------------------------------------------------------------------- #
+def _percentile(sorted_values: list[float], pct: float) -> float:
+    """Linear-interpolated percentile (0–100) of a sequence.
+
+    Accepts unsorted input; sorts internally for safety.  Use
+    :func:`statistics.quantiles` semantics approximated here with linear
+    interpolation, matching the p50/p95 reporting in ``--benchmark``.
+    """
+    if not sorted_values:
+        return 0.0
+    s = sorted(sorted_values)
+    if len(s) == 1:
+        return s[0]
+    k = (len(s) - 1) * (pct / 100.0)
+    lo = math.floor(k)
+    hi = math.ceil(k)
+    if lo == hi:
+        return s[int(k)]
+    weight = k - lo
+    return s[lo] + (s[hi] - s[lo]) * weight
+
+
+@dataclass
+class BenchmarkResult:
+    """Aggregated stats from running the washer N times."""
+
+    iterations: int
+    durations: list[float] = field(default_factory=list)
+    ai_scores: list[float] = field(default_factory=list)
+    winners: list[str] = field(default_factory=list)
+    errors: int = 0
+
+    # -- lazy-derived stats (percentiles sort internally) -------------------
+    @property
+    def p50_latency(self) -> float:
+        return _percentile(self.durations, 50)
+
+    @property
+    def p95_latency(self) -> float:
+        return _percentile(self.durations, 95)
+
+    @property
+    def mean_latency(self) -> float:
+        return statistics.mean(self.durations) if self.durations else 0.0
+
+    @property
+    def min_latency(self) -> float:
+        return min(self.durations) if self.durations else 0.0
+
+    @property
+    def max_latency(self) -> float:
+        return max(self.durations) if self.durations else 0.0
+
+    @property
+    def mean_ai_score(self) -> float:
+        return statistics.mean(self.ai_scores) if self.ai_scores else 0.0
+
+    @property
+    def min_ai_score(self) -> float:
+        return min(self.ai_scores) if self.ai_scores else 0.0
+
+    @property
+    def max_ai_score(self) -> float:
+        return max(self.ai_scores) if self.ai_scores else 0.0
+
+    def format_report(self) -> str:
+        """Render a human-readable benchmark report."""
+        lines: list[str] = []
+        lines.append(f"Benchmark Results ({self.iterations} iterations)")
+        lines.append("=" * 56)
+        lines.append(
+            f"  Latency (s):  mean={self.mean_latency:.2f}  "
+            f"p50={self.p50_latency:.2f}  p95={self.p95_latency:.2f}  "
+            f"min={self.min_latency:.2f}  max={self.max_latency:.2f}"
+        )
+        lines.append(
+            f"  AI score:     mean={self.mean_ai_score:.1f}  "
+            f"min={self.min_ai_score:.1f}  max={self.max_ai_score:.1f}"
+        )
+        lines.append(f"  Winners:      {dict((m, c) for m, c in statistics.Counter(self.winners).items())}")
+        lines.append(f"  Failed runs:  {self.errors}")
+        return "\n".join(lines)
+
+
+def run_benchmark(
+    text: str,
+    iterations: int = 10,
+    verbose: bool = False,
+    wash_fn=multi_agent_wash,
+) -> BenchmarkResult:
+    """Run the multi-agent wash *iterations* times and aggregate stats.
+
+    ``wash_fn`` is injectable (defaults to :func:`multi_agent_wash`) so tests can
+    pass a fake/slow implementation without touching Ollama.
+    """
+    result = BenchmarkResult(iterations=iterations)
+    for i in range(iterations):
+        candidate = wash_fn(text, verbose=False)
+        result.durations.append(candidate.duration)
+        result.winners.append(candidate.model if not candidate.is_error else "ERROR")
+        if candidate.is_error:
+            result.errors += 1
+            result.ai_scores.append(999.0)
+        else:
+            result.ai_scores.append(candidate.ai_score)
+        if verbose:
+            print_info(
+                f"  [{i + 1}/{iterations}] winner={candidate.model} "
+                f"AI={candidate.ai_score:.1f} t={candidate.duration:.2f}s",
+                file=sys.stderr,
+            )
+    return result
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser for the multi-agent washer."""
     parser = argparse.ArgumentParser(
@@ -241,20 +359,53 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Only score the input (no wash); prints the pre-wash AI score",
     )
+    parser.add_argument(
+        "--benchmark",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Run the multi-agent wash N times and report latency/p50/p95 "
+            "and AI-score stats. No output file is written unless --output "
+            "is also given, in which case the last run's winner text is written."
+        ),
+    )
     return parser
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    text = read_input_text(args.input, allow_stdin="-")
+    if not args.input and not args.dry_run and args.benchmark is None:
+        parser.error("input file is required (or use --help)")
+
+    text = read_input_text(args.input, allow_stdin="-") if args.input else ""
 
     if args.dry_run:
         report = analyze_text(text)
         print(f"Pre-wash AI Score: {report.ai_score:.1f}/100")
         print(f"Burstiness: {report.burstiness:.3f}")
         print(f"Perplexity: {report.perplexity:.1f}")
+        return 0
+
+    if args.benchmark is not None:
+        if args.benchmark < 1:
+            parser.error("--benchmark N requires N >= 1")
+        print_info(
+            f"Running {args.benchmark}-iteration multi-agent benchmark...",
+            file=sys.stderr,
+        )
+        result = run_benchmark(
+            text, iterations=args.benchmark, verbose=args.verbose
+        )
+        print(result.format_report())
+        # If an output file was also requested, write the last run's winner text.
+        if args.output and result.winners:
+            last_text = _last_winner_text(text, args.benchmark)
+            if last_text is not None:
+                write_output_text(args.output, last_text)
+                print_success(f"Wrote {args.output} (benchmark winner text)")
         return 0
 
     print_info("Running 3-agent parallel wash...", file=sys.stderr)
@@ -268,6 +419,15 @@ def main() -> int:
     else:
         print(best.text)
     return 0
+
+
+def _last_winner_text(text: str, iterations: int) -> str | None:
+    """Re-run the wash once to obtain output text for ``--benchmark -o``."""
+    try:
+        best = multi_agent_wash(text, verbose=False)
+        return best.text
+    except Exception:  # noqa: BLE001 — best-effort, don't mask benchmark output
+        return None
 
 
 if __name__ == "__main__":
