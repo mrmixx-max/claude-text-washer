@@ -85,7 +85,7 @@ def calculate_entropy(tokens: list[str]) -> float:
     return entropy
 
 
-def calculate_type_token_ratio(tokens: list[str]) -> float:
+def calculate_type_token_ratio(tokens: list[str], counts: Counter | None = None) -> float:
     """Calculate Type-Token Ratio (TTR) — vocabulary richness.
 
     Higher TTR = more diverse vocabulary (more human-like).
@@ -93,11 +93,13 @@ def calculate_type_token_ratio(tokens: list[str]) -> float:
     """
     if not tokens:
         return 0.0
+    if counts is not None:
+        return len(counts) / len(tokens)
     unique = len(set(tokens))
     return unique / len(tokens)
 
 
-def calculate_zipf_coefficient(tokens: list[str]) -> float:
+def calculate_zipf_coefficient(tokens: list[str], counts: Counter | None = None) -> float:
     """Calculate Zipf coefficient — deviation from ideal Zipf distribution.
 
     Human text follows Zipf's law. AI text often deviates.
@@ -105,7 +107,8 @@ def calculate_zipf_coefficient(tokens: list[str]) -> float:
     """
     if len(tokens) < 10:
         return 0.0
-    counts = Counter(tokens)
+    if counts is None:
+        counts = Counter(tokens)
     sorted_freq = sorted(counts.values(), reverse=True)
     # Take top 50 tokens to avoid noise from rare words
     top_freq = sorted_freq[:50]
@@ -125,7 +128,7 @@ def calculate_zipf_coefficient(tokens: list[str]) -> float:
     return -slope  # Return positive value (ideal Zipf ≈ 1.0)
 
 
-def calculate_hapax_ratio(tokens: list[str]) -> float:
+def calculate_hapax_ratio(tokens: list[str], counts: Counter | None = None) -> float:
     """Calculate hapax legomena ratio — words appearing only once.
 
     Higher ratio = more unique words = more human-like.
@@ -133,7 +136,8 @@ def calculate_hapax_ratio(tokens: list[str]) -> float:
     """
     if not tokens:
         return 0.0
-    counts = Counter(tokens)
+    if counts is None:
+        counts = Counter(tokens)
     hapax = sum(1 for c in counts.values() if c == 1)
     return hapax / len(counts) if counts else 0.0
 
@@ -164,7 +168,7 @@ def analyze_ngrams(tokens: list[str], n: int = 2) -> dict:
     return {str(ng): count / total for ng, count in counts.most_common(20)}
 
 
-def detect_green_list_bias(tokens: list[str]) -> float:
+def detect_green_list_bias(tokens: list[str], counts: Counter | None = None) -> float:
     """Detect potential green-list watermark bias.
 
     Green-list watermarks bias token selection toward a subset of vocabulary.
@@ -183,7 +187,10 @@ def detect_green_list_bias(tokens: list[str]) -> float:
         'sind', 'waren', 'sein', 'haben', 'hat', 'hatte', 'wird', 'würde', 'kann',
     }
 
-    stop_count = sum(1 for t in tokens if t.lower() in stopwords)
+    if counts is not None:
+        stop_count = sum(counts[t] for t in counts if t in stopwords)
+    else:
+        stop_count = sum(1 for t in tokens if t in stopwords)
     return stop_count / len(tokens) if tokens else 0.0
 
 
@@ -214,9 +221,14 @@ def calculate_sentence_entropy(sentences: list[str]) -> float:
 
 
 def analyze_text(text: str) -> WatermarkReport:
-    """Full statistical analysis of text for AI watermark patterns."""
+    """Full statistical analysis of text for AI watermark patterns.
+
+    Performance: tokenizes once, computes Counter once, reuses for all metrics.
+    Short texts (< 20 tokens) skip expensive ngram/zipf calculations.
+    """
     tokens = tokenize(text)
     sentences = sentence_split(text)
+    token_count = len(tokens)
 
     if not tokens or not sentences:
         return WatermarkReport(
@@ -226,22 +238,98 @@ def analyze_text(text: str) -> WatermarkReport:
             ai_score=0.0, details={"error": "empty text"}
         )
 
+    # Pre-compute Counter ONCE — reused by entropy, TTR, zipf, hapax, green-list
+    counts = Counter(tokens)
+
+    # Fast-path for short texts: skip expensive zipf/ngram calculations
+    if token_count < 20:
+        word_entropy = calculate_entropy(tokens)
+        sentence_entropy = calculate_sentence_entropy(sentences)
+        burstiness = calculate_burstiness(sentences)
+        return WatermarkReport(
+            perplexity=2 ** word_entropy,
+            burstiness=burstiness, ngram_bias=0.0,
+            green_list_ratio=detect_green_list_bias(tokens, counts),
+            sentence_entropy=sentence_entropy,
+            word_entropy=word_entropy,
+            type_token_ratio=calculate_type_token_ratio(tokens, counts),
+            zipf_coefficient=0.0, hapax_ratio=calculate_hapax_ratio(tokens, counts),
+            ai_score=_calc_ai_score(
+                burstiness=burstiness,
+                word_entropy=word_entropy,
+                sentence_entropy=sentence_entropy,
+                green_list_ratio=detect_green_list_bias(tokens, counts),
+                ngram_bias=0.0,
+                type_token_ratio=calculate_type_token_ratio(tokens, counts),
+                hapax_ratio=calculate_hapax_ratio(tokens, counts),
+                zipf_coefficient=0.0,
+            ),
+            details={
+                "token_count": token_count,
+                "sentence_count": len(sentences),
+                "note": "short text — zipf/ngram skipped",
+            }
+        )
+
+    # Full analysis for longer texts
     perplexity = calculate_perplexity(tokens)
     burstiness = calculate_burstiness(sentences)
     word_entropy = calculate_entropy(tokens)
     sentence_entropy = calculate_sentence_entropy(sentences)
-    green_list_ratio = detect_green_list_bias(tokens)
-    type_token_ratio = calculate_type_token_ratio(tokens)
-    zipf_coefficient = calculate_zipf_coefficient(tokens)
-    hapax_ratio = calculate_hapax_ratio(tokens)
+    green_list_ratio = detect_green_list_bias(tokens, counts)
+    type_token_ratio = calculate_type_token_ratio(tokens, counts)
+    zipf_coefficient = calculate_zipf_coefficient(tokens, counts)
+    hapax_ratio = calculate_hapax_ratio(tokens, counts)
 
     # N-gram bias (measure of repetitive patterns)
     bigrams = analyze_ngrams(tokens, 2)
     trigrams = analyze_ngrams(tokens, 3)
     ngram_bias = max(bigrams.values()) if bigrams else 0.0
 
-    # AI Score calculation (0-100)
-    # Low burstiness + low entropy + high green-list ratio = likely AI
+    ai_score = _calc_ai_score(
+        burstiness=burstiness,
+        word_entropy=word_entropy,
+        sentence_entropy=sentence_entropy,
+        green_list_ratio=green_list_ratio,
+        ngram_bias=ngram_bias,
+        type_token_ratio=type_token_ratio,
+        hapax_ratio=hapax_ratio,
+        zipf_coefficient=zipf_coefficient,
+    )
+
+    return WatermarkReport(
+        perplexity=perplexity,
+        burstiness=burstiness,
+        ngram_bias=ngram_bias,
+        green_list_ratio=green_list_ratio,
+        sentence_entropy=sentence_entropy,
+        word_entropy=word_entropy,
+        type_token_ratio=type_token_ratio,
+        zipf_coefficient=zipf_coefficient,
+        hapax_ratio=hapax_ratio,
+        ai_score=min(ai_score, 100.0),
+        details={
+            "token_count": token_count,
+            "sentence_count": len(sentences),
+            "avg_sentence_length": sum(len(s.split()) for s in sentences) / len(sentences),
+            "top_bigrams": dict(list(bigrams.items())[:5]) if bigrams else {},
+            "top_trigrams": dict(list(trigrams.items())[:5]) if trigrams else {},
+        }
+    )
+
+
+def _calc_ai_score(
+    *,
+    burstiness: float,
+    word_entropy: float,
+    sentence_entropy: float,
+    green_list_ratio: float,
+    ngram_bias: float,
+    type_token_ratio: float,
+    hapax_ratio: float,
+    zipf_coefficient: float,
+) -> float:
+    """Calculate AI score (0-100) from pre-computed metrics."""
     ai_score = 0.0
     if burstiness < 0.3:
         ai_score += 20
@@ -259,26 +347,7 @@ def analyze_text(text: str) -> WatermarkReport:
         ai_score += 10
     if zipf_coefficient < 0.5:
         ai_score += 5
-
-    return WatermarkReport(
-        perplexity=perplexity,
-        burstiness=burstiness,
-        ngram_bias=ngram_bias,
-        green_list_ratio=green_list_ratio,
-        sentence_entropy=sentence_entropy,
-        word_entropy=word_entropy,
-        type_token_ratio=type_token_ratio,
-        zipf_coefficient=zipf_coefficient,
-        hapax_ratio=hapax_ratio,
-        ai_score=min(ai_score, 100.0),
-        details={
-            "token_count": len(tokens),
-            "sentence_count": len(sentences),
-            "avg_sentence_length": sum(len(s.split()) for s in sentences) / len(sentences),
-            "top_bigrams": dict(list(bigrams.items())[:5]) if bigrams else {},
-            "top_trigrams": dict(list(trigrams.items())[:5]) if trigrams else {},
-        }
-    )
+    return ai_score
 
 
 def generate_anti_watermark_prompt(text: str, report: WatermarkReport) -> str:
