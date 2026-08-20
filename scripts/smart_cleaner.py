@@ -17,6 +17,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from marker_scan import PATTERNS
 
+# Pre-compile all regex patterns once at module level (not per-call)
+# Each entry: (severity, compiled_pattern, note)
+_COMPILED_PATTERNS: list[tuple[int, re.Pattern, str]] = [
+    (sev, re.compile(pat, re.IGNORECASE | re.DOTALL), note)
+    for sev, pat, note in PATTERNS
+]
+
+# Invisible Unicode characters commonly found in AI-generated text.
+# U+200A (Hair Space), U+202F (Narrow No-Break Space) — identified in
+# forum research as the 28 most frequent invisible markers.
+# Also: U+200B (Zero Width Space), U+200C (ZWNJ), U+200D (ZWJ), U+FEFF (BOM).
+_INVISIBLE_UNICODE = re.compile(
+    "[\u200A\u202F\u200B\u200C\u200D\uFEFF]+"
+)
+
 
 def clean_text(text: str, aggressive: bool = False) -> str:
     """Remove obvious AI markers via regex substitutions.
@@ -32,7 +47,7 @@ def clean_text(text: str, aggressive: bool = False) -> str:
     min_sev = 2 if not aggressive else 1
     result = text
 
-    for sev, pat, note in PATTERNS:
+    for sev, pat, note in _COMPILED_PATTERNS:
         if sev < min_sev:
             continue
         # Replace with empty string for stock phrases
@@ -40,18 +55,16 @@ def clean_text(text: str, aggressive: bool = False) -> str:
         # we keep the content but remove the template wrapper.
         if "not only" in note.lower():
             # "not only X but also Y" → "X. Also Y"
-            result = re.sub(
-                pat,
-                lambda m: _flatten_not_only(m),
-                result,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
+            result = pat.sub(lambda m: _flatten_not_only(m), result)
         elif "template" in note.lower() or "opener" in note.lower() or "closer" in note.lower():
             # Remove template openers/closers entirely
-            result = re.sub(pat, "", result, flags=re.IGNORECASE | re.DOTALL)
+            result = pat.sub("", result)
         else:
             # For buzzwords, remove the word but keep the sentence structure
-            result = re.sub(pat, "", result, flags=re.IGNORECASE)
+            result = pat.sub("", result)
+
+    # Remove invisible Unicode characters (AI artifacts)
+    result = _INVISIBLE_UNICODE.sub(" ", result)
 
     # Clean up double spaces and trailing whitespace
     result = re.sub(r"  +", " ", result)
@@ -77,8 +90,8 @@ def _flatten_not_only(m: re.Match) -> str:
 def get_marker_count(text: str) -> dict[str, int]:
     """Count markers by severity."""
     high = mid = low = 0
-    for sev, pat, _ in PATTERNS:
-        count = len(re.findall(pat, text, flags=re.IGNORECASE | re.DOTALL))
+    for sev, pat, _ in _COMPILED_PATTERNS:
+        count = len(pat.findall(text))
         if sev == 3:
             high += count
         elif sev == 2:
