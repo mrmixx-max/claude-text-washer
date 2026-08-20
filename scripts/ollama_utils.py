@@ -33,6 +33,33 @@ DEFAULT_MAX_TOKENS = 1024
 
 
 @dataclass
+class SamplingConfig:
+    """LLM sampling parameters for generation control."""
+    temperature: float = 0.7
+    top_p: float = 0.9
+    top_k: int = 40
+    frequency_penalty: float = 0.0
+    presence_penalty: float = 0.0
+    repeat_penalty: float = 1.1
+    min_p: float = 0.0
+    seed: int | None = None
+    max_tokens: int = 4096
+    stop: list[str] = field(default_factory=list)
+    response_format: str | None = None
+
+
+# Preset configs for common use cases
+SAMPLING_PRESETS: dict[str, SamplingConfig] = {
+    "conservative": SamplingConfig(temperature=0.3, top_p=0.8, top_k=20),
+    "balanced": SamplingConfig(temperature=0.7, top_p=0.9, top_k=40),
+    "creative": SamplingConfig(temperature=0.9, top_p=0.95, top_k=60),
+    "chaotic": SamplingConfig(temperature=1.2, top_p=1.0, top_k=100),
+}
+
+DEFAULT_CFG = SamplingConfig()
+
+
+@dataclass
 class BackendConfig:
     """Configuration for an LLM backend.
 
@@ -309,9 +336,12 @@ _models_lock = threading.Lock()
 
 
 def _models_file() -> Path:
-    """Locate ``scripts/models.yaml`` relative to this module."""
-    here = Path(__file__).resolve().parent
-    return here / "models.yaml"
+    """Locate ``scripts/models.yaml`` relative to this module or PyInstaller bundle."""
+    if getattr(sys, "_MEIPASS", None):
+        base = Path(sys._MEIPASS) / "scripts"
+    else:
+        base = Path(__file__).resolve().parent
+    return base / "models.yaml"
 
 
 def load_models() -> dict[str, Any]:
