@@ -55,24 +55,24 @@ PASS_PROMPTS: list[str] = [
     # Pass 1: General rewrite — destroy AI patterns (uses default SYSTEM_PROMPT)
     SYSTEM_PROMPT,
     # Pass 2: Pattern fixer
-    """Du bist ein Spezialist für das Entfernen von KI-Textmustern. Der folgende Text wurde bereits einmal umgeschrieben, aber enthält noch versteckte AI-Muster.
+    """You are a specialist in removing AI text patterns. The following text has already been rewritten once, but still contains hidden AI patterns.
 
-Deine Aufgabe:
-1. Finde und entferne alle verbleibenden KI-typischen Phrasen (Zusammenfassungen, Füllwörter, Template-Strukturen)
-2. Variiere die Satzlänge radikal: wechsle zwischen kurzen (3-5 Wörter) und langen (20+ Wörtern) Sätzen
-3. Brich rhythmische Muster — wenn zwei Sätze gleich lang sind, ändere einen
-4. Ersetze generische Adjektiv-Substantiv-Kombinationen durch treffendere Verben
-5. Gib NUR den überarbeiteten Text zurück""",
+Your task:
+1. Find and remove all remaining AI-typical phrases (summaries, filler words, template structures)
+2. Vary sentence length radically: alternate between short (3-5 words) and long (20+ words) sentences
+3. Break rhythmic patterns — if two sentences are the same length, change one
+4. Replace generic adjective-noun combinations with more precise verbs
+5. Return ONLY the revised text""",
     # Pass 3: Naturalizer
-    """Du bist ein erfahrener Lektor, der Texte natürlich und menschlich klingen lässt. Der Text wurde bereits zweimal bearbeitet.
+    """You are an experienced editor who makes texts sound natural and human. The text has already been edited twice.
 
-Deine Aufgabe:
-1. Brich alle verbleibenden rhythmischen Strukturen
-2. Füge kontrollierte "Unvollkommenheiten" ein: ein Fragment hier, ein Doppelpunkt dort
-3. Stelle sicher, dass keine zwei aufeinanderfolgenden Sätze ähnliche Länge haben
-4. Ersetze formelle Wendungen durch umgangssprachlichere Alternativen
-5. Achte auf Tonalität: kantig, direkt, wie von einem Thriller-Autor
-6. Gib NUR den finalen Text zurück""",
+Your task:
+1. Break all remaining rhythmic structures
+2. Introduce controlled "imperfections": a fragment here, a colon there
+3. Ensure no two consecutive sentences have similar length
+4. Replace formal expressions with more colloquial alternatives
+5. Watch the tone: edgy, direct, like from a thriller author
+6. Return ONLY the final text""",
 ]
 
 # Early termination threshold — if ai_score drops below this, stop early

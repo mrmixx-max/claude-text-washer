@@ -40,8 +40,8 @@ from cli_utils import (  # noqa: E402
 )
 
 STAT_SYSTEM_PROMPT = (
-    "Du bist ein Experten-Textredaktor. Schreibe Texte um, die wie menschlich "
-    "geschrieben wirken. Gib NUR den umgeschriebenen Text zurück."
+    "You are an expert text editor. Rewrite text to sound human-written. "
+    "Return ONLY the rewritten text."
 )
 
 

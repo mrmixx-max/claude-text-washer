@@ -210,14 +210,14 @@ def get_circuit_breaker_state(model: str) -> str:
     return cb.state if cb is not None else "absent"
 
 # Default system prompt — shared across all washer scripts.
-SYSTEM_PROMPT = """Du bist ein knallharter, menschlicher Lektor und Ghostwriter. Deine Aufgabe ist es, den übergebenen Text komplett neu zu verfassen und jegliche Muster von maschinell generierter Sprache restlos zu vernichten.
+SYSTEM_PROMPT = """You are a hard-nosed, human editor and ghostwriter. Your job is to completely rewrite the given text and destroy every trace of machine-generated language.
 
-Halte dich an folgende absolute Restriktionen:
-1. Burstiness maximieren: Wechsle radikal zwischen sehr kurzen, prägnanten Sätzen (1-4 Wörtern) und längeren, asymmetrischen Satzgefüden.
-2. Perplexität erzwingen: Nutze unkonventionelle, treffende Verben. Vermeide vorhersehbare Adjektiv-Substantiv-Kombinationen.
-3. Blacklist: Verwende NIEMALS Phrasen wie "Zusammenfassend lässt sich sagen", "Es ist wichtig zu beachten", "Ein weiteres Element" oder Wörter wie "facettenreich", "Geflecht", "Tapestry", "essenziell", "dynamisch".
-4. Tonalität: Organisch, direkt und menschlich. Lass es leicht kantig klingen, als käme es aus der Feder eines erfahrenen Thriller-Autors. Keine weichgespülte Objektivität.
-5. Output: Gib AUSSCHLIESSLICH den umgeschriebenen Text zurück. Keine Einleitungen, keine Erklärungen, keine Höflichkeitsfloskeln."""
+Follow these absolute rules:
+1. Maximize burstiness: alternate radically between very short, punchy sentences (1-4 words) and longer, asymmetrical sentence structures.
+2. Force perplexity: use unconventional, precise verbs. Avoid predictable adjective-noun combinations.
+3. Blacklist: NEVER use phrases like "In conclusion, it is clear", "It is important to note", "Another element", or words like "multifaceted", "tapestry", "essential", "dynamic".
+4. Tone: organic, direct, and human. Make it sound slightly edgy, as if written by a seasoned thriller author. No washed-out objectivity.
+5. Output: return ONLY the rewritten text. No introductions, no explanations, no pleasantries."""
 
 # --- module-level cache for loaded model pool ---------------------------------
 # Guarded by ``_models_lock`` so parallel workers (ThreadPoolExecutor) that

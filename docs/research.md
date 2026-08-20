@@ -1,47 +1,47 @@
-# Claude Text Washer — Erkenntnisse & Forschung
+# Claude Text Washer — Research & Findings
 
-## Claude-spezifische Marker (2026)
+## Claude-Specific Markers (2026)
 
-### Lexikalische Muster
+### Lexical Patterns
 
-Claude (Anthropic) verwendet charakteristische Phrasen, die sich von GPT-Mustern unterscheiden:
+Claude (Anthropic) uses characteristic phrases that differ from GPT patterns:
 
-| Kategorie | Claude-Marker | Häufigkeit |
-|-----------|---------------|------------|
-| Einleitung | "Lassen Sie mich...", "Ich möchte betonen..." | Hoch |
-| Abschluss | "Zusammenfassend...", "Abschließend..." | Sehr hoch |
-| Übergang | "Darüber hinaus", "Des Weiteren" | Hoch |
-| Abschwächung | "Es könnte argumentiert werden", "Einige würden sagen" | Mittel |
-| Struktur | Drei-Gliederung (erstens, zweitens, drittens) | Sehr hoch |
+| Category   | Claude Marker                              | Frequency |
+|------------|--------------------------------------------|-----------|
+| Opening    | "Let me...", "I'd like to emphasize..."    | High      |
+| Closing    | "In summary...", "To conclude..."          | Very high |
+| Transition | "Furthermore", "In addition"               | High      |
+| Hedging    | "It could be argued", "Some would say"     | Medium    |
+| Structure  | Tripartite (first, second, third)          | Very high |
 
-### Claude vs. GPT — Unterschiede
+### Claude vs. GPT — Differences
 
-| Merkmal | Claude | GPT |
-|---------|--------|-----|
-| Satzlänge | Länger, verschachtelter | Mittellang, gleichmäßig |
-| Abschwächung | Stark ("möglicherweise", "in gewisser Weise") | Gering |
-| Struktur | Dreigliedrig, ausgewogen | Viergliedrig, variabler |
-| Ton | Höflich, akademisch | Direkt, pragmatisch |
-| Em-Dash | Selten | Häufig |
+| Feature      | Claude                          | GPT                     |
+|--------------|---------------------------------|-------------------------|
+| Sentence len | Longer, more nested             | Medium, uniform         |
+| Hedging      | Strong ("possibly", "somewhat") | Weak                    |
+| Structure    | Tripartite, balanced            | Quadripartite, variable |
+| Tone         | Polite, academic                | Direct, pragmatic       |
+| Em-dash      | Rare                            | Frequent                |
 
-### Statistische Wasserzeichen
+### Statistical Watermarks
 
-Claude verwendet kein bekanntes statistisches Textwasserzeichen (wie Googles SynthID). Die Erkennung erfolgt über:
+Claude uses no known statistical text watermark (like Google's SynthID). Detection relies on:
 
-1. **Stilometrie** — Satzlänge, Vokabular, Syntax
-2. **N-Gramm-Analyse** — charakteristische Wortpaare
-3. **Perplexität** — Claude-Text hat niedrigere Perplexität (vorhersehbarer)
+1. **Stylometry** — sentence length, vocabulary, syntax
+2. **N-gram analysis** — characteristic word pairs
+3. **Perplexity** — Claude text has lower perplexity (more predictable)
 
-### Rewrite-Strategien
+### Rewrite Strategies
 
-1. **Burstigkeit erhöhen** — kurze Sätze zwischen lange mischen
-2. **Abschwächungen entfernen** — direkte Aussagen statt "man könnte"
-3. **Drei-Gliederung brechen** — ungerade Anzahlen, asymmetrische Abschnitte
-4. **Vokabular variieren** — seltenere Verben, konkrete Substantive
-5. **Übergänge reduzieren** — nicht jeder Absatz braucht Einleitung
+1. **Increase burstiness** — mix short and long sentences
+2. **Remove hedging** — direct statements instead of "one could"
+3. **Break tripartite structure** — odd numbers, asymmetrical sections
+4. **Vary vocabulary** — rarer verbs, concrete nouns
+5. **Reduce transitions** — not every paragraph needs an introduction
 
-## Quellen
+## Sources
 
-- [Anthropic — Constititional AI](https://www.anthropic.com/research/claude-model-spec)
+- [Anthropic — Constitutional AI](https://www.anthropic.com/research/claude-model-spec)
 - [Pangram Labs — AI Detection](https://pangram.com/)
 - [GPTZero — Perplexity Scoring](https://gptzero.me/)
