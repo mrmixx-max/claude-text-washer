@@ -37,6 +37,7 @@ from cli_utils import (  # noqa: E402
     write_output_text,
 )
 from smart_cleaner import clean_text, get_marker_count  # noqa: E402
+from stat_engine import analyze_text  # noqa: E402
 
 # Model presets — speed vs quality tradeoffs.
 # Each preset can be overridden by an explicit --model flag.
@@ -45,6 +46,37 @@ MODELS: dict[str, dict] = {
     "standard": {"model": "llama3.2", "temperature": 0.8, "max_tokens": 1024},
     "premium": {"model": "llama3.2", "temperature": 0.9, "max_tokens": 2048},
 }
+
+# Progressive pass prompts — each pass has a different focus.
+# Pass 1: General rewrite (destroy AI patterns)
+# Pass 2: Pattern fixer (target remaining markers, vary structure)
+# Pass 3: Naturalizer (break rhythm, add imperfections)
+PASS_PROMPTS: list[str] = [
+    # Pass 1: General rewrite — destroy AI patterns (uses default SYSTEM_PROMPT)
+    SYSTEM_PROMPT,
+    # Pass 2: Pattern fixer
+    """Du bist ein Spezialist für das Entfernen von KI-Textmustern. Der folgende Text wurde bereits einmal umgeschrieben, aber enthält noch versteckte AI-Muster.
+
+Deine Aufgabe:
+1. Finde und entferne alle verbleibenden KI-typischen Phrasen (Zusammenfassungen, Füllwörter, Template-Strukturen)
+2. Variiere die Satzlänge radikal: wechsle zwischen kurzen (3-5 Wörter) und langen (20+ Wörtern) Sätzen
+3. Brich rhythmische Muster — wenn zwei Sätze gleich lang sind, ändere einen
+4. Ersetze generische Adjektiv-Substantiv-Kombinationen durch treffendere Verben
+5. Gib NUR den überarbeiteten Text zurück""",
+    # Pass 3: Naturalizer
+    """Du bist ein erfahrener Lektor, der Texte natürlich und menschlich klingen lässt. Der Text wurde bereits zweimal bearbeitet.
+
+Deine Aufgabe:
+1. Brich alle verbleibenden rhythmischen Strukturen
+2. Füge kontrollierte "Unvollkommenheiten" ein: ein Fragment hier, ein Doppelpunkt dort
+3. Stelle sicher, dass keine zwei aufeinanderfolgenden Sätze ähnliche Länge haben
+4. Ersetze formelle Wendungen durch umgangssprachlichere Alternativen
+5. Achte auf Tonalität: kantig, direkt, wie von einem Thriller-Autor
+6. Gib NUR den finalen Text zurück""",
+]
+
+# Early termination threshold — if ai_score drops below this, stop early
+EARLY_TERMINATION_THRESHOLD = 25.0
 
 
 @dataclass
@@ -80,21 +112,31 @@ def wash_pass(text: str, preset: str = "standard") -> WashResult:
 
 
 def wash_multi_pass(text: str, preset: str = "standard", passes: int = 2) -> WashResult:
-    """Multi-pass wash for deeper cleaning."""
+    """Multi-pass wash for deeper cleaning.
+
+    Uses progressive prompts (pass 1: general, pass 2: pattern fixer,
+    pass 3: naturalizer) and early termination if ai_score drops below
+    threshold.
+    """
     cfg = MODELS[preset]
     current = text
     total_start = time.time()
 
     for i in range(passes):
-        # Vary temperature slightly per pass for diversity
         temp = cfg["temperature"] + (i * 0.05)
+        system_prompt = PASS_PROMPTS[i % 3]
         current = call_ollama(
             prompt=current,
             model=cfg["model"],
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             temperature=temp,
             max_tokens=cfg["max_tokens"],
         )
+        # Early termination: if ai_score is low enough, stop wasting passes
+        if i >= 1:
+            score = analyze_text(current).ai_score
+            if score < EARLY_TERMINATION_THRESHOLD:
+                break
 
     total_duration = time.time() - total_start
     return WashResult(current, cfg["model"], total_duration, passes)
@@ -155,22 +197,28 @@ def wash_multi_pass_cfg(
 ) -> WashResult:
     """Multi-pass wash using an explicit config dict (thread-safe).
 
-    Temperature is varied slightly per pass for diversity, mirroring
-    :func:`wash_multi_pass` but without touching global state.
+    Uses progressive prompts and early termination. Temperature is varied
+    slightly per pass for diversity.
     """
     current = text
     total_start = time.time()
     for i in range(passes):
         temp = cfg["temperature"] + (i * 0.05)
+        system_prompt = PASS_PROMPTS[i % 3]
         current = call_ollama(
             prompt=current,
             model=cfg["model"],
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             temperature=temp,
             max_tokens=cfg["max_tokens"],
             timeout=timeout,
             max_retries=max_retries,
         )
+        # Early termination
+        if i >= 1:
+            score = analyze_text(current).ai_score
+            if score < EARLY_TERMINATION_THRESHOLD:
+                break
     return WashResult(current, cfg["model"], time.time() - total_start, passes)
 
 
@@ -266,16 +314,24 @@ def main(argv: list[str] | None = None) -> None:
             cfg = MODELS[preset]
             current = text
             total_start = time.time()
-            for _ in range(passes):
+            actual_passes = 0
+            for i in range(passes):
                 bar.advance()
+                actual_passes += 1
+                system_prompt = PASS_PROMPTS[i % 3]
                 current = call_ollama(
                     prompt=current,
                     model=cfg["model"],
-                    system_prompt=SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     temperature=cfg["temperature"],
                     max_tokens=cfg["max_tokens"],
                 )
-            result = WashResult(current, cfg["model"], time.time() - total_start, passes)
+                # Early termination
+                if i >= 1:
+                    score = analyze_text(current).ai_score
+                    if score < EARLY_TERMINATION_THRESHOLD:
+                        break
+            result = WashResult(current, cfg["model"], time.time() - total_start, actual_passes)
 
     # Smart Clean: post-clean (catch what the model missed)
     if args.smart_clean:
