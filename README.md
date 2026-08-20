@@ -77,6 +77,66 @@ claude-washer file doc.pdf --dry-run
 claude-washer file input.docx -o clean.txt
 ```
 
+## Backends
+
+claude-text-washer supports **any LLM backend** — local or remote:
+
+| Backend        | Type    | Example URL                                      |
+|----------------|---------|--------------------------------------------------|
+| Ollama (local) | ollama  | `http://127.0.0.1:11434/api/generate` (default)  |
+| vLLM           | openai  | `http://localhost:8000/v1/chat/completions`      |
+| LM Studio      | openai  | `http://localhost:1234/v1/chat/completions`      |
+| OpenRouter     | openai  | `https://openrouter.ai/api/v1/chat/completions`  |
+| Together       | openai  | `https://api.together.xyz/v1/chat/completions`   |
+| Groq           | openai  | `https://api.groq.com/openai/v1/chat/completions`|
+| OpenAI         | openai  | `https://api.openai.com/v1/chat/completions`     |
+
+### CLI Examples
+
+```bash
+# Local Ollama (default)
+python scripts/washer.py input.txt --model llama3.2
+
+# Remote OpenAI-compatible API
+python scripts/washer.py input.txt \
+  --base-url https://openrouter.ai/api/v1/chat/completions \
+  --api-key $OPENROUTER_API_KEY \
+  --model google/gemini-2.0-flash-001
+
+# vLLM local
+python scripts/washer.py input.txt \
+  --base-url http://localhost:8000/v1/chat/completions \
+  --model mistralai/Mistral-7B-Instruct-v0.3
+
+# With temperature control
+python scripts/washer.py input.txt --temperature 0.3  # conservative
+python scripts/washer.py input.txt --temperature 1.2  # creative
+```
+
+### Temperature
+
+Control randomness with `--temperature`:
+
+| Value | Style       | Use case              |
+|-------|-------------|-----------------------|
+| 0.0-0.3 | Precise    | Factual, repetitive   |
+| 0.5-0.7 | Balanced   | Natural prose         |
+| 0.8-1.0 | Creative   | Varied, unpredictable |
+| 1.0-2.0 | Chaotic    | Experimental          |
+
+Run without `--temperature` for interactive preset selection.
+
+### Configuration
+
+Backend profiles are defined in `scripts/backends.yaml`. Add your own:
+
+```yaml
+my-custom:
+  type: openai
+  base_url: http://my-server:8080/v1/chat/completions
+  api_key_env: MY_API_KEY
+```
+
 ## Format Detection & Batch Processing
 
 `file_washer` detects file format by **magic bytes** (not extension), so

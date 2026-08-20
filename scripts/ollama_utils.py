@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Shared Ollama utilities for claude-text-washer.
+"""Shared LLM utilities for claude-text-washer.
 
 Provides:
   - Model-pool loading from models.yaml
   - Model validation against the configured pool
   - ``--list-models`` formatting and early-exit helper
-  - A single ``call_ollama`` HTTP helper used by all CLI scripts
+  - A generic ``call_llm`` HTTP helper used by all CLI scripts
+  - Backend abstraction: Ollama + OpenAI-compatible APIs (vLLM, LM Studio, OpenRouter, ...)
 """
 from __future__ import annotations
 
 import json
+import os
 import random
 import socket
 import sys
@@ -17,13 +19,92 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+# --- backend configuration ---------------------------------------------------
+# Default: Ollama local. Override via set_backend() or CLI args.
 
 OLLAMA_URL = "http://127.0.0.1:11434/api/generate"
 OLLAMA_STREAM_URL = "http://127.0.0.1:11434/api/generate"
 DEFAULT_TEMPERATURE = 0.8
 DEFAULT_MAX_TOKENS = 1024
+
+
+@dataclass
+class BackendConfig:
+    """Configuration for an LLM backend.
+
+    Attributes
+    ----------
+    name:
+        Human-readable name (e.g. "ollama-local", "vllm", "lm-studio").
+    base_url:
+        API endpoint URL for generation.
+    stream_url:
+        API endpoint URL for streaming (defaults to base_url if unset).
+    backend_type:
+        ``"ollama"`` or ``"openai"``. Use ``"auto"`` to detect from URL.
+    api_key:
+        Optional API key (sent as Bearer token).
+    extra_headers:
+        Optional extra HTTP headers.
+    """
+    name: str = "ollama-local"
+    base_url: str = OLLAMA_URL
+    stream_url: str | None = None
+    backend_type: str = "auto"
+    api_key: str | None = None
+    extra_headers: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.stream_url is None:
+            self.stream_url = self.base_url
+        if self.backend_type == "auto":
+            self.backend_type = _detect_backend_type(self.base_url)
+
+
+def _detect_backend_type(url: str) -> str:
+    """Detect backend type from URL pattern.
+
+    Returns ``"ollama"`` if the URL looks like an Ollama endpoint,
+    ``"openai"`` otherwise (vLLM, LM Studio, OpenRouter, Together, etc.).
+    """
+    url_lower = url.lower()
+    if "11434" in url or "/api/generate" in url_lower or "/api/chat" in url_lower:
+        return "ollama"
+    return "openai"
+
+
+# --- global backend state -----------------------------------------------------
+_backend_config: BackendConfig | None = None
+_backend_lock = threading.Lock()
+
+
+def set_backend(config: BackendConfig) -> None:
+    """Set the global backend configuration (thread-safe)."""
+    global _backend_config
+    with _backend_lock:
+        _backend_config = config
+
+
+def get_backend() -> BackendConfig:
+    """Return the global backend configuration (default: Ollama local)."""
+    global _backend_config
+    if _backend_config is not None:
+        return _backend_config
+    with _backend_lock:
+        if _backend_config is None:
+            _backend_config = BackendConfig()
+        return _backend_config
+
+
+def reset_backend() -> None:
+    """Reset backend to default (Ollama local)."""
+    global _backend_config
+    with _backend_lock:
+        _backend_config = None
 
 # --- connection pooling ------------------------------------------------------
 # A module-level opener with keep-alive so multi-agent runs reuse HTTP
@@ -320,12 +401,21 @@ def format_model_list() -> str:
 
 
 def handle_list_models() -> None:
-    """Print the model list and exit the process (for CLI ``--list-models``)."""
-    print("Available Ollama models:")
+    """Print the model list and backend info, then exit."""
+    print("Available models (Ollama pool):")
     print(format_model_list())
     print()
     print(f"Default model: {get_default_model()}")
     print(f"(* marks the default)")
+    print()
+    backend = get_backend()
+    print(f"Active backend: {backend.name} ({backend.backend_type})")
+    print(f"  URL: {backend.base_url}")
+    if backend.api_key:
+        print(f"  API key: ***{backend.api_key[-4:]}")
+    print()
+    print("Use --base-url to target any OpenAI-compatible API (vLLM, LM Studio, OpenRouter, etc.)")
+    print("Use --backend-type ollama|openai|auto to override auto-detection")
     sys.exit(0)
 
 
@@ -349,6 +439,92 @@ def _is_retryable_exception(exc: BaseException) -> bool:
     return isinstance(exc, _RETRYABLE_EXC_TYPES)
 
 
+def call_llm(
+    prompt: str,
+    model: str,
+    system_prompt: str = "",
+    temperature: float = DEFAULT_TEMPERATURE,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+    timeout: int = DEFAULT_TIMEOUT,
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    backoff_base: float = DEFAULT_BACKOFF_BASE,
+    backoff_max: float = DEFAULT_BACKOFF_MAX,
+    cb_failure_threshold: int = DEFAULT_CB_FAILURE_THRESHOLD,
+    cb_cooldown: float = DEFAULT_CB_COOLDOWN,
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    backend_type: str | None = None,
+) -> str:
+    """Call an LLM via HTTP and return the response text.
+
+    Supports both Ollama and OpenAI-compatible APIs (vLLM, LM Studio,
+    OpenRouter, Together, etc.). The backend type is auto-detected from
+    the URL or can be specified explicitly.
+
+    Retries with exponential backoff + jitter on *transient* failures
+    (``URLError`` / ``OSError`` / ``socket.timeout`` and HTTP 429 & 5xx).
+    Non-retryable failures raise immediately.
+
+    A per-model **circuit breaker** wraps the retries.
+    """
+    backend = get_backend()
+    url = base_url or backend.base_url
+    key = api_key if api_key is not None else backend.api_key
+    btype = backend_type or backend.backend_type
+    if btype == "auto":
+        btype = _detect_backend_type(url)
+
+    breaker = get_circuit_breaker(
+        f"{btype}:{url}:{model}",
+        failure_threshold=cb_failure_threshold,
+        cooldown=cb_cooldown,
+    )
+    if breaker.is_open():
+        raise CircuitBreakerOpenError(
+            f"Circuit breaker OPEN for model '{model}' via {btype} at {url} "
+            f"after {breaker.failure_count} consecutive failures — failing fast "
+            f"(cooldown {cb_cooldown}s)."
+        ) from None
+
+    payload = _build_payload(prompt, model, system_prompt, temperature, max_tokens, btype)
+    data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    headers.update(backend.extra_headers)
+
+    last_exc: BaseException | None = None
+    for attempt in range(max_retries + 1):
+        req = urllib.request.Request(url, data=data, headers=headers)
+        try:
+            opener = _get_opener()
+            with opener.open(req, timeout=timeout) as resp:
+                result = json.loads(resp.read().decode("utf-8"))
+                breaker.record_success()
+                return _extract_response(result, btype).strip()
+        except urllib.error.HTTPError as exc:
+            if exc.code in _RETRYABLE_HTTP_STATUS:
+                if attempt < max_retries:
+                    last_exc = exc
+                    _sleep_backoff(attempt, backoff_base, backoff_max)
+                    continue
+                breaker.record_failure()
+            raise RuntimeError(f"LLM error ({model}@{url}): {exc}") from exc
+        except _RETRYABLE_EXC_TYPES as exc:
+            last_exc = exc
+            if attempt < max_retries:
+                _sleep_backoff(attempt, backoff_base, backoff_max)
+                continue
+            breaker.record_failure()
+            raise RuntimeError(f"LLM error ({model}@{url}): {exc}") from exc
+        except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
+            raise RuntimeError(f"LLM malformed response ({model}@{url}): {exc}") from exc
+
+    breaker.record_failure()
+    raise RuntimeError(f"LLM error ({model}@{url}): {last_exc}") from last_exc
+
+
 def call_ollama(
     prompt: str,
     model: str,
@@ -364,114 +540,72 @@ def call_ollama(
 ) -> str:
     """Call a local Ollama model via HTTP and return the response text.
 
-    Retries with exponential backoff + jitter on *transient* failures
-    (``URLError`` / ``OSError`` / ``socket.timeout`` and HTTP 429 & 5xx).
-    Non-retryable failures (e.g. HTTP 400 Bad Request, a 404 for a missing
-    model) raise immediately.
-
-    A per-model **circuit breaker** wraps the retries: after
-    ``cb_failure_threshold`` *consecutive* failed calls the breaker trips
-    OPEN and further calls to that model fail fast with
-    :class:`CircuitBreakerOpenError` — preventing a persistently
-    rate-limited (429) model from cascading retries across the parallel
-    multi-agent washer.  The breaker closes again on the first success
-    (or after ``cb_cooldown`` seconds when in HALF-OPEN).
-
-    Parameters
-    ----------
-    prompt:
-        The user prompt / text to send.
-    model:
-        Ollama model name (e.g. ``llama3.2``).
-    system_prompt:
-        Optional system prompt to steer the model.
-    temperature:
-        Sampling temperature.
-    max_tokens:
-        Maximum tokens to generate (``num_predict`` in Ollama).
-    timeout:
-        Per-request HTTP timeout in seconds.
-    max_retries:
-        Number of *additional* attempts after the initial call fails
-        transiently (default 3).
-    backoff_base:
-        Base seconds for exponential backoff (default 1.0).
-    backoff_max:
-        Cap on a single backoff sleep in seconds (default 10.0).
-    cb_failure_threshold:
-        Consecutive failures required to trip the circuit breaker (default 3).
-    cb_cooldown:
-        Seconds the breaker stays OPEN before a half-open probe is allowed
-        (default 30.0).
+    Backward-compatible alias for :func:`call_llm` with Ollama defaults.
     """
-    breaker = get_circuit_breaker(
-        model,
-        failure_threshold=cb_failure_threshold,
-        cooldown=cb_cooldown,
+    return call_llm(
+        prompt=prompt,
+        model=model,
+        system_prompt=system_prompt,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        max_retries=max_retries,
+        backoff_base=backoff_base,
+        backoff_max=backoff_max,
+        cb_failure_threshold=cb_failure_threshold,
+        cb_cooldown=cb_cooldown,
     )
-    if breaker.is_open():
-        # Fail fast: the model has been persistently unhealthy (e.g. repeated
-        # 429s).  Raising here skips the HTTP call and its retry/backoff loop,
-        # so rate-limited models don't cascade retries into the other workers.
-        raise CircuitBreakerOpenError(
-            f"Circuit breaker OPEN for model '{model}' after "
-            f"{breaker.failure_count} consecutive failures — failing fast "
-            f"(cooldown {cb_cooldown}s). This prevents cascading retries "
-            f"across parallel agents."
-        ) from None
 
-    payload: dict[str, Any] = {
+
+def _build_payload(
+    prompt: str,
+    model: str,
+    system_prompt: str,
+    temperature: float,
+    max_tokens: int,
+    backend_type: str,
+) -> dict[str, Any]:
+    """Build request payload for the given backend type."""
+    if backend_type == "ollama":
+        return {
+            "model": model,
+            "system": system_prompt,
+            "prompt": prompt,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens,
+            },
+        }
+    # OpenAI-compatible format
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    return {
         "model": model,
-        "system": system_prompt,
-        "prompt": prompt,
-        "stream": False,
-        "options": {
-            "temperature": temperature,
-            "num_predict": max_tokens,
-        },
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
-    data = json.dumps(payload).encode("utf-8")
 
-    last_exc: BaseException | None = None
-    for attempt in range(max_retries + 1):
-        req = urllib.request.Request(
-            OLLAMA_URL,
-            data=data,
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            opener = _get_opener()
-            with opener.open(req, timeout=timeout) as resp:
-                result = json.loads(resp.read().decode("utf-8"))
-                breaker.record_success()
-                return result.get("response", "").strip()
-        except urllib.error.HTTPError as exc:
-            # HTTPError is a subclass of URLError but carries a status code.
-            # Only retry on server-side / rate-limit codes.
-            if exc.code in _RETRYABLE_HTTP_STATUS:
-                if attempt < max_retries:
-                    last_exc = exc
-                    _sleep_backoff(attempt, backoff_base, backoff_max)
-                    continue
-                # Retries exhausted on a *retryable* status (e.g. 429) — the
-                # model is persistently unhealthy, so trip the circuit breaker.
-                breaker.record_failure()
-            raise RuntimeError(f"Ollama error ({model}): {exc}") from exc
-        except _RETRYABLE_EXC_TYPES as exc:
-            last_exc = exc
-            if attempt < max_retries:
-                _sleep_backoff(attempt, backoff_base, backoff_max)
-                continue
-            breaker.record_failure()
-            raise RuntimeError(f"Ollama error ({model}): {exc}") from exc
-        except (json.JSONDecodeError, UnicodeDecodeError, KeyError) as exc:
-            # Malformed response — not retryable (retry won't fix a parse error)
-            # and not a transient/429 condition, so we do NOT trip the breaker.
-            raise RuntimeError(f"Ollama malformed response ({model}): {exc}") from exc
 
-    # Exhausted retries. Should be unreachable, but guard anyway.
-    breaker.record_failure()
-    raise RuntimeError(f"Ollama error ({model}): {last_exc}") from last_exc
+def _extract_response(result: dict[str, Any], backend_type: str) -> str:
+    """Extract text from response based on backend type."""
+    if backend_type == "ollama":
+        return result.get("response", "")
+    # OpenAI-compatible format
+    try:
+        return result["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        # Fallback: try common response formats
+        if "response" in result:
+            return result["response"]
+        if "content" in result:
+            return result["content"]
+        if "text" in result:
+            return result["text"]
+        raise RuntimeError(f"Unexpected response format: {list(result.keys())}")
 
 
 def call_ollama_stream(
@@ -527,22 +661,28 @@ def call_ollama_stream(
 def resolve_model(
     requested: str | None,
     script_default: str = "llama3.2",
+    *,
+    allow_remote: bool = True,
 ) -> str:
     """Resolve the effective model name.
 
     Priority:
-      1. Explicit ``--model`` value (validated against pool; error if unknown)
+      1. Explicit ``--model`` value (validated against pool unless ``allow_remote=True``)
       2. Pool default from ``models.yaml``
       3. *script_default* fallback
+
+    When ``allow_remote`` is True and the model is not in the pool,
+    it is accepted as-is (for use with remote backends like OpenRouter, vLLM, etc.).
     """
     if requested:
         if not validate_model(requested):
-            available = ", ".join(get_model_names())
-            raise ValueError(
-                f"Model '{requested}' is not in the configured pool.\n"
-                f"Available models: {available}\n"
-                f"Use --list-models to see the full list."
-            )
+            if not allow_remote:
+                available = ", ".join(get_model_names())
+                raise ValueError(
+                    f"Model '{requested}' is not in the configured pool.\n"
+                    f"Available models: {available}\n"
+                    f"Use --list-models to see the full list."
+                )
         return requested
     try:
         return get_default_model()
@@ -550,15 +690,97 @@ def resolve_model(
         return script_default
 
 
+def add_backend_args(parser) -> None:
+    """Attach backend-related CLI arguments to *parser*.
+
+    Adds ``--base-url``, ``--api-key``, ``--backend-type`` and
+    ``--temperature`` for full control over the LLM backend.
+    """
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        help="LLM API endpoint URL (default: http://127.0.0.1:11434/api/generate for Ollama)",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        help="API key for remote backends (sent as Bearer token)",
+    )
+    parser.add_argument(
+        "--backend-type",
+        choices=["ollama", "openai", "auto"],
+        default=None,
+        help="Backend type: 'ollama' for local Ollama, 'openai' for OpenAI-compatible APIs (vLLM, LM Studio, OpenRouter), 'auto' to detect from URL",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature (0.0=deterministic, 1.0=creative). Default: 0.8",
+    )
+
+
 def add_model_args(parser) -> None:
     """Attach standard ``--model`` and ``--list-models`` arguments to *parser*."""
     parser.add_argument(
         "--model",
         default=None,
-        help=f"Ollama model to use (default: {get_default_model()})",
+        help=f"Model to use (default: {get_default_model()})",
     )
     parser.add_argument(
         "--list-models",
         action="store_true",
-        help="List all available Ollama models and exit",
+        help="List all available models and exit",
     )
+
+
+def resolve_temperature(requested: float | None, *, interactive: bool = False) -> float:
+    """Resolve the effective temperature.
+
+    Priority:
+      1. Explicit ``requested`` value (from CLI ``--temperature``)
+      2. Interactive prompt (if ``interactive=True`` and no value given)
+      3. Default (0.8)
+    """
+    if requested is not None:
+        return clamp_temperature(requested)
+
+    if interactive and sys.stdin.isatty():
+        return _interactive_temperature()
+
+    return DEFAULT_TEMPERATURE
+
+
+def _interactive_temperature() -> float:
+    """Prompt the user to choose a temperature preset."""
+    presets = {
+        "1": ("Conservative (0.3) — precise, repetitive, less creative", 0.3),
+        "2": ("Balanced (0.7) — natural, slightly varied", 0.7),
+        "3": ("Creative (0.9) — diverse, unpredictable (default)", 0.9),
+        "4": ("Chaotic (1.2) — highly random, experimental", 1.2),
+    }
+    print("\n🌡️  Temperature selection:", file=sys.stderr)
+    for key, (desc, _) in presets.items():
+        marker = " ← default" if key == "3" else ""
+        print(f"   [{key}] {desc}{marker}", file=sys.stderr)
+    print(file=sys.stderr)
+    while True:
+        try:
+            choice = input("Choose [1-4] (Enter=default): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            return DEFAULT_TEMPERATURE
+        if not choice:
+            return DEFAULT_TEMPERATURE
+        if choice in presets:
+            return presets[choice][1]
+        # Allow direct numeric input
+        try:
+            return clamp_temperature(float(choice))
+        except ValueError:
+            print("   Invalid choice. Enter 1-4 or a number like 0.5", file=sys.stderr)
+
+
+def clamp_temperature(value: float) -> float:
+    """Clamp temperature to a safe range [0.0, 2.0]."""
+    return max(0.0, min(2.0, value))
