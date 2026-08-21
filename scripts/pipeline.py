@@ -7,10 +7,15 @@ Supports any Ollama model from the pool defined in scripts/models.yaml.
   --preset NAME       Use a speed/quality preset (fast|standard|premium)
   --passes N          Number of rewrite passes (1-3)
   --temperature N     Override sampling temperature
+  --cache             Enable LLM response caching
+  --no-cache          Disable LLM response caching
 """
 from __future__ import annotations
 
 import argparse
+import functools
+import hashlib
+import json
 import sys
 import time
 from dataclasses import dataclass
@@ -46,6 +51,57 @@ MODELS: dict[str, dict] = {
     "standard": {"model": "llama3.2", "temperature": 0.8, "max_tokens": 1024},
     "premium": {"model": "llama3.2", "temperature": 0.9, "max_tokens": 2048},
 }
+
+# --- LLM Response Caching ---
+_CACHE_DIR = Path.home() / ".cache" / "claude-text-washer"
+_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+_MEMORY_CACHE: dict[str, str] = {}
+
+
+def _cache_key(prompt: str, model: str, system_prompt: str, temperature: float, max_tokens: int) -> str:
+    content = f"{prompt}|{model}|{system_prompt}|{temperature}|{max_tokens}"
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _cache_get(key: str) -> str | None:
+    if key in _MEMORY_CACHE:
+        return _MEMORY_CACHE[key]
+    f = _CACHE_DIR / f"{key}.json"
+    if f.exists():
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            _MEMORY_CACHE[key] = data["response"]
+            return data["response"]
+        except (json.JSONDecodeError, KeyError):
+            return None
+    return None
+
+
+def _cache_put(key: str, response: str) -> None:
+    _MEMORY_CACHE[key] = response
+    f = _CACHE_DIR / f"{key}.json"
+    f.write_text(json.dumps({"response": response}, ensure_ascii=False), encoding="utf-8")
+
+
+def cached_call_ollama(
+    prompt: str,
+    model: str,
+    system_prompt: str,
+    temperature: float,
+    max_tokens: int,
+    use_cache: bool = True,
+    **kwargs,
+) -> str:
+    """Call Ollama with optional caching."""
+    if not use_cache:
+        return call_ollama(prompt, model=model, system_prompt=system_prompt, temperature=temperature, max_tokens=max_tokens, **kwargs)
+    key = _cache_key(prompt, model, system_prompt, temperature, max_tokens)
+    cached = _cache_get(key)
+    if cached is not None:
+        return cached
+    response = call_ollama(prompt, model=model, system_prompt=system_prompt, temperature=temperature, max_tokens=max_tokens, **kwargs)
+    _cache_put(key, response)
+    return response
 
 # Progressive pass prompts — each pass has a different focus.
 # Pass 1: General rewrite (destroy AI patterns)
@@ -87,7 +143,7 @@ class WashResult:
     passes: int
 
 
-def wash_pass(text: str, preset: str = "standard") -> WashResult:
+def wash_pass(text: str, preset: str = "standard", use_cache: bool = True) -> WashResult:
     """Single-pass wash with specified model preset.
 
     Parameters
@@ -97,15 +153,18 @@ def wash_pass(text: str, preset: str = "standard") -> WashResult:
     preset:
         One of ``fast``, ``standard``, ``premium``. If a custom model was
         injected via :func:`set_override_model`, it is used instead.
+    use_cache:
+        Enable LLM response caching.
     """
     cfg = MODELS[preset]
     start = time.time()
-    cleaned = call_ollama(
+    cleaned = cached_call_ollama(
         prompt=text,
         model=cfg["model"],
         system_prompt=SYSTEM_PROMPT,
         temperature=cfg["temperature"],
         max_tokens=cfg["max_tokens"],
+        use_cache=use_cache,
     )
     duration = time.time() - start
     return WashResult(cleaned, cfg["model"], duration, 1)
@@ -259,6 +318,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="List all available Ollama models and exit",
     )
     parser.add_argument(
+        "--cache",
+        action="store_true",
+        default=True,
+        help="Enable LLM response caching (default: on)",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Disable LLM response caching",
+    )
+    parser.add_argument(
         "--smart-clean",
         action="store_true",
         help="Pre/post clean obvious markers via regex (cheap, no LLM cost)",
@@ -305,9 +375,12 @@ def main(argv: list[str] | None = None) -> None:
     # Clamp passes to the documented 1-3 range.
     passes = max(1, min(3, args.passes))
 
+    # Determine cache setting
+    use_cache = args.cache and not args.no_cache
+
     with ProgressBar(total=passes, label=f"wash ({preset})") as bar:
         if passes == 1:
-            result = wash_pass(text, preset)
+            result = wash_pass(text, preset, use_cache=use_cache)
             bar.advance()
         else:
             # Re-implement multi-pass inline so the progress bar advances per pass.
@@ -319,12 +392,13 @@ def main(argv: list[str] | None = None) -> None:
                 bar.advance()
                 actual_passes += 1
                 system_prompt = PASS_PROMPTS[i % 3]
-                current = call_ollama(
+                current = cached_call_ollama(
                     prompt=current,
                     model=cfg["model"],
                     system_prompt=system_prompt,
                     temperature=cfg["temperature"],
                     max_tokens=cfg["max_tokens"],
+                    use_cache=use_cache,
                 )
                 # Early termination
                 if i >= 1:
