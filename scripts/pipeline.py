@@ -44,6 +44,13 @@ from cli_utils import (  # noqa: E402
 from smart_cleaner import clean_text, get_marker_count  # noqa: E402
 from stat_engine import analyze_text  # noqa: E402
 
+# Panoptes integration
+try:
+    from panoptes_adapter import analyze_text as panoptes_analyze
+    HAS_PANOPTES = True
+except ImportError:
+    HAS_PANOPTES = False
+
 # Model presets — speed vs quality tradeoffs.
 # Each preset can be overridden by an explicit --model flag.
 MODELS: dict[str, dict] = {
@@ -329,6 +336,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable LLM response caching",
     )
     parser.add_argument(
+        "--panoptes",
+        action="store_true",
+        help="Use Panoptes detection methodology for scoring",
+    )
+    parser.add_argument(
         "--smart-clean",
         action="store_true",
         help="Pre/post clean obvious markers via regex (cheap, no LLM cost)",
@@ -410,6 +422,11 @@ def main(argv: list[str] | None = None) -> None:
     # Smart Clean: post-clean (catch what the model missed)
     if args.smart_clean:
         result.text = clean_text(result.text, aggressive=False)
+
+    # Panoptes scoring
+    if args.panoptes and HAS_PANOPTES:
+        score = panoptes_analyze(result.text)
+        print_info(f"Panoptes AI score: {score.ai_score:.1f}/100 ({score.verdict})")
 
     if args.output:
         write_output_text(args.output, result.text)
