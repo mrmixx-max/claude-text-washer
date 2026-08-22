@@ -8,13 +8,28 @@ import sys
 import urllib.request
 from pathlib import Path
 
-from scripts.stat_engine import analyze_text
-from scripts.ollama_utils import get_model_names, get_model_config, handle_list_models, validate_model
+try:
+    from scripts.cli_utils import print_error
+    from scripts.ollama_utils import (
+        get_default_model,
+        handle_list_models,
+        load_models,
+        validate_model,
+    )
+    from scripts.stat_engine import analyze_text
+except ImportError:  # allow `python scripts/chat.py` direct execution
+    from cli_utils import print_error
+    from ollama_utils import (
+        get_default_model,
+        handle_list_models,
+        load_models,
+        validate_model,
+    )
+    from stat_engine import analyze_text
 
 # Wrapper for list_models compatibility
 def list_models():
     """Return all models from the pool."""
-    from scripts.ollama_utils import load_models
     return load_models().get("models", {})
 
 # ANSI Colors
@@ -102,11 +117,46 @@ def print_help() -> None:
 """)
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Claude Text Washer — Chat with local Ollama")
-    parser.add_argument("--model", default="llama3.2", help="Ollama model (default: llama3.2)")
-    parser.add_argument("--system", default=SYSTEM_PROMPT, help="Custom system prompt")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Claude Text Washer — Chat with local Ollama"
+    )
+    parser.add_argument(
+        "--model",
+        default="llama3.2",
+        metavar="MODEL",
+        help=f"Ollama model to use (default: {get_default_model()})",
+    )
+    parser.add_argument(
+        "--system",
+        default=SYSTEM_PROMPT,
+        help="Custom system prompt",
+    )
+    parser.add_argument(
+        "--list-models",
+        action="store_true",
+        help="List available models and exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.list_models:
+        handle_list_models()
+        return 0
+
+    # Validate the requested model up front so we fail fast with a clear error
+    # instead of a confusing connection traceback.
+    try:
+        model_is_valid = validate_model(args.model)
+    except (OSError, RuntimeError, ValueError):
+        # If the model pool cannot be read, don't block startup — the chat
+        # loop will surface any real connection errors instead.
+        model_is_valid = True
+    if not model_is_valid:
+        print_error(
+            f"Unknown model: {args.model} "
+            f"(use --list-models to see available models)"
+        )
+        return 2
 
     model = args.model
     system = args.system
@@ -151,11 +201,10 @@ def main(argv: list[str] | None = None) -> None:
                     print(f"  {marker} {m:15s} ({cfg.get('size', '?')}) {cfg.get('description', '')}")
                 new_model = input(f"\n{DIM}Model name (Enter to keep {model}):{RESET} ").strip()
                 if new_model:
-                    try:
-                        validate_model(new_model)
+                    if validate_model(new_model):
                         model = new_model
                         print(f"{GREEN}Switched to {model}{RESET}")
-                    except ValueError:
+                    else:
                         print(f"{RED}Model not found.{RESET}")
                 continue
 
@@ -210,6 +259,8 @@ def main(argv: list[str] | None = None) -> None:
 
         print_status(model, len(history) // 2, last_score)
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

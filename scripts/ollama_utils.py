@@ -692,7 +692,7 @@ def resolve_model(
     requested: str | None,
     script_default: str = "llama3.2",
     *,
-    allow_remote: bool = True,
+    allow_remote: bool = False,
 ) -> str:
     """Resolve the effective model name.
 
