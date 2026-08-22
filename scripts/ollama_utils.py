@@ -11,7 +11,6 @@ Provides:
 from __future__ import annotations
 
 import json
-import os
 import random
 import socket
 import sys
@@ -291,9 +290,19 @@ def get_circuit_breaker(
     cooldown: float = DEFAULT_CB_COOLDOWN,
     half_open_max_calls: int = DEFAULT_CB_HALF_OPEN_MAX_CALLS,
 ) -> CircuitBreaker:
-    """Return the shared :class:`CircuitBreaker` for *model* (creating it once)."""
+    """Return the shared :class:`CircuitBreaker` for *model* (creating it once).
+
+    Breakers are keyed ``"{backend_type}:{url}:{model}"``; a bare *model*
+    resolves to the existing breaker via ``:{model}`` suffix match so callers
+    and tests can address it without knowing the full key.
+    """
     with _circuit_breakers_lock:
         cb = _circuit_breakers.get(model)
+        if cb is None:
+            suffix = ":" + model
+            for k, existing in _circuit_breakers.items():
+                if k.endswith(suffix):
+                    return existing
         if cb is None:
             cb = CircuitBreaker(
                 model,
@@ -311,10 +320,27 @@ def reset_circuit_breakers() -> None:
         _circuit_breakers.clear()
 
 
+def _breaker_keys_for(model: str) -> list[str]:
+    """Return all registered breaker keys matching *model*.
+
+    Breakers are keyed ``"{backend_type}:{url}:{model}"``; older callers and
+    tests may pass the bare model name, so match on the ``:{model}`` suffix.
+    Exact-key matches take precedence.
+    """
+    with _circuit_breakers_lock:
+        if model in _circuit_breakers:
+            return [model]
+        suffix = ":" + model
+        return [k for k in _circuit_breakers if k.endswith(suffix)]
+
+
 def get_circuit_breaker_state(model: str) -> str:
     """Return the state name of the breaker for *model*, or ``'absent'``."""
+    keys = _breaker_keys_for(model)
+    if not keys:
+        return "absent"
     with _circuit_breakers_lock:
-        cb = _circuit_breakers.get(model)
+        cb = _circuit_breakers.get(keys[0])
     return cb.state if cb is not None else "absent"
 
 # Default system prompt — shared across all washer scripts.
@@ -436,7 +462,7 @@ def handle_list_models() -> None:
     print(format_model_list())
     print()
     print(f"Default model: {get_default_model()}")
-    print(f"(* marks the default)")
+    print("(* marks the default)")
     print()
     backend = get_backend()
     print(f"Active backend: {backend.name} ({backend.backend_type})")
@@ -704,15 +730,14 @@ def resolve_model(
     When ``allow_remote`` is True and the model is not in the pool,
     it is accepted as-is (for use with remote backends like OpenRouter, vLLM, etc.).
     """
+    if requested and not validate_model(requested) and not allow_remote:
+        available = ", ".join(get_model_names())
+        raise ValueError(
+            f"Model '{requested}' is not in the configured pool.\n"
+            f"Available models: {available}\n"
+            "Use --list-models to see the full list."
+        )
     if requested:
-        if not validate_model(requested):
-            if not allow_remote:
-                available = ", ".join(get_model_names())
-                raise ValueError(
-                    f"Model '{requested}' is not in the configured pool.\n"
-                    f"Available models: {available}\n"
-                    f"Use --list-models to see the full list."
-                )
         return requested
     try:
         return get_default_model()
